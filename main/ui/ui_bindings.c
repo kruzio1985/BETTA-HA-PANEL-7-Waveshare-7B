@@ -1,0 +1,736 @@
+/* SPDX-License-Identifier: LicenseRef-FNCL-1.1
+ * Copyright (c) 2026 Cpt_Kirk
+ */
+#include "ui/ui_bindings.h"
+
+#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+#include <inttypes.h>
+#include <limits.h>
+
+#include "esp_timer.h"
+#include "esp_log.h"
+
+#include "app_config.h"
+#include "app_events.h"
+#include "ha/ha_client.h"
+#include "ha/ha_light_capabilities.h"
+#include "ha/ha_model.h"
+#include "ha/ha_services.h"
+
+#define UI_BINDINGS_POWER_CMD_DEBOUNCE_MS 250
+#define UI_BINDINGS_CMD_DEBOUNCE_SLOTS 24
+static const char *TAG = "ui_bindings";
+
+typedef struct {
+    bool used;
+    char entity_id[APP_MAX_ENTITY_ID_LEN];
+    int64_t last_cmd_ms;
+    bool last_target_known;
+    bool last_target_on;
+} ui_bindings_cmd_debounce_t;
+
+static ui_bindings_cmd_debounce_t s_power_cmd_debounce[UI_BINDINGS_CMD_DEBOUNCE_SLOTS];
+
+static void ui_bindings_publish_state_changed_event(const char *entity_id)
+{
+    if (entity_id == NULL || entity_id[0] == '\0') {
+        return;
+    }
+
+    app_event_t event = {.type = EV_HA_STATE_CHANGED};
+    strlcpy(event.data.ha_state_changed.entity_id, entity_id, sizeof(event.data.ha_state_changed.entity_id));
+    if (!app_events_publish(&event, pdMS_TO_TICKS(5))) {
+        ESP_LOGW(TAG, "failed to enqueue optimistic state event for %s", entity_id);
+    } else {
+#if APP_HA_ROUTE_TRACE_LOG
+        ESP_LOGI(TAG, "route panel_touch->panel entity=%s source=optimistic", entity_id);
+#endif
+    }
+}
+
+static void ui_bindings_apply_optimistic_power_state(const char *entity_id, bool on)
+{
+    if (entity_id == NULL || entity_id[0] == '\0') {
+        return;
+    }
+
+    ha_state_t state = {0};
+    if (!ha_model_get_state(entity_id, &state)) {
+        strlcpy(state.entity_id, entity_id, sizeof(state.entity_id));
+        strlcpy(state.attributes_json, "{}", sizeof(state.attributes_json));
+    }
+
+    strlcpy(state.state, on ? "on" : "off", sizeof(state.state));
+    state.last_changed_unix_ms = esp_timer_get_time() / 1000;
+    if (ha_model_upsert_state(&state) == ESP_OK) {
+        ui_bindings_publish_state_changed_event(entity_id);
+    }
+}
+
+static void ui_bindings_apply_optimistic_state_text(const char *entity_id, const char *state_text)
+{
+    if (entity_id == NULL || entity_id[0] == '\0' || state_text == NULL || state_text[0] == '\0') {
+        return;
+    }
+
+    ha_state_t state = {0};
+    if (!ha_model_get_state(entity_id, &state)) {
+        strlcpy(state.entity_id, entity_id, sizeof(state.entity_id));
+        strlcpy(state.attributes_json, "{}", sizeof(state.attributes_json));
+    }
+
+    strlcpy(state.state, state_text, sizeof(state.state));
+    state.last_changed_unix_ms = esp_timer_get_time() / 1000;
+    if (ha_model_upsert_state(&state) == ESP_OK) {
+        ui_bindings_publish_state_changed_event(entity_id);
+    }
+}
+
+static bool ui_bindings_allow_power_command_now(const char *entity_id, bool target_known, bool target_on)
+{
+    if (entity_id == NULL || entity_id[0] == '\0') {
+        return false;
+    }
+
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    int free_idx = -1;
+    int oldest_idx = 0;
+    int64_t oldest_ts = INT64_MAX;
+
+    for (int i = 0; i < UI_BINDINGS_CMD_DEBOUNCE_SLOTS; i++) {
+        if (!s_power_cmd_debounce[i].used) {
+            if (free_idx < 0) {
+                free_idx = i;
+            }
+            continue;
+        }
+
+        if (strncmp(s_power_cmd_debounce[i].entity_id, entity_id, APP_MAX_ENTITY_ID_LEN) == 0) {
+            int64_t age_ms = now_ms - s_power_cmd_debounce[i].last_cmd_ms;
+            bool duplicate_target =
+                target_known &&
+                s_power_cmd_debounce[i].last_target_known &&
+                (s_power_cmd_debounce[i].last_target_on == target_on);
+            if (duplicate_target && age_ms < UI_BINDINGS_POWER_CMD_DEBOUNCE_MS) {
+                ESP_LOGD(TAG, "drop duplicate power cmd entity=%s target=%s age=%" PRId64 "ms",
+                    entity_id, target_on ? "on" : "off", age_ms);
+                return false;
+            }
+            s_power_cmd_debounce[i].last_cmd_ms = now_ms;
+            s_power_cmd_debounce[i].last_target_known = target_known;
+            s_power_cmd_debounce[i].last_target_on = target_on;
+            return true;
+        }
+
+        if (s_power_cmd_debounce[i].last_cmd_ms < oldest_ts) {
+            oldest_ts = s_power_cmd_debounce[i].last_cmd_ms;
+            oldest_idx = i;
+        }
+    }
+
+    int slot = (free_idx >= 0) ? free_idx : oldest_idx;
+    s_power_cmd_debounce[slot].used = true;
+    s_power_cmd_debounce[slot].last_cmd_ms = now_ms;
+    s_power_cmd_debounce[slot].last_target_known = target_known;
+    s_power_cmd_debounce[slot].last_target_on = target_on;
+    strlcpy(s_power_cmd_debounce[slot].entity_id, entity_id, sizeof(s_power_cmd_debounce[slot].entity_id));
+    return true;
+}
+
+static bool split_entity_id(const char *entity_id, char *domain_out, size_t domain_len)
+{
+    if (entity_id == NULL || domain_out == NULL || domain_len == 0) {
+        return false;
+    }
+    const char *dot = strchr(entity_id, '.');
+    if (dot == NULL || dot == entity_id) {
+        return false;
+    }
+    size_t len = (size_t)(dot - entity_id);
+    if (len >= domain_len) {
+        len = domain_len - 1U;
+    }
+    memcpy(domain_out, entity_id, len);
+    domain_out[len] = '\0';
+    return true;
+}
+
+esp_err_t ui_bindings_toggle_entity(const char *entity_id)
+{
+    if (entity_id == NULL || entity_id[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    bool target_known = false;
+    bool target_on = false;
+    ha_state_t current = {0};
+    if (ha_model_get_state(entity_id, &current)) {
+        if (strcmp(current.state, "on") == 0) {
+            target_known = true;
+            target_on = false;
+        } else if (strcmp(current.state, "off") == 0) {
+            target_known = true;
+            target_on = true;
+        }
+    }
+
+    if (!ui_bindings_allow_power_command_now(entity_id, target_known, target_on)) {
+        return ESP_OK;
+    }
+    char domain[32] = {0};
+    if (!split_entity_id(entity_id, domain, sizeof(domain))) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (strcmp(domain, HA_DOMAIN_BUTTON) == 0) {
+        return ui_bindings_press_entity(entity_id);
+    }
+
+    /* Scenes and scripts are momentary: tapping always runs them (turn_on).
+     * They report "off"/"on" only transiently, so never optimistic-toggle off. */
+    if (strcmp(domain, HA_DOMAIN_SCENE) == 0 || strcmp(domain, HA_DOMAIN_SCRIPT) == 0) {
+        char payload[192] = {0};
+        snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\"}", entity_id);
+        return ha_client_call_service(domain, HA_SERVICE_TURN_ON, payload);
+    }
+
+    char payload[192] = {0};
+    if (strcmp(domain, HA_DOMAIN_LIGHT) == 0) {
+#if APP_HA_LIGHT_USE_TRANSITION_ZERO
+        snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\",\"transition\":0}", entity_id);
+#else
+        snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\"}", entity_id);
+#endif
+    } else {
+        snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\"}", entity_id);
+    }
+
+    const char *service = HA_SERVICE_TOGGLE;
+    if (target_known) {
+        service = target_on ? HA_SERVICE_TURN_ON : HA_SERVICE_TURN_OFF;
+    }
+
+    bool optimistic_on = target_known ? target_on : true;
+
+    esp_err_t err = ha_client_call_service(domain, service, payload);
+    if (err == ESP_OK) {
+        ui_bindings_apply_optimistic_power_state(entity_id, optimistic_on);
+    } else {
+        ESP_LOGW(TAG, "toggle failed entity=%s service=%s err=%s", entity_id, service, esp_err_to_name(err));
+    }
+    return err;
+}
+
+esp_err_t ui_bindings_set_entity_power(const char *entity_id, bool on)
+{
+    if (entity_id == NULL || entity_id[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char domain[32] = {0};
+    if (!split_entity_id(entity_id, domain, sizeof(domain))) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    bool is_light = (strcmp(domain, HA_DOMAIN_LIGHT) == 0);
+
+#if APP_HA_LIGHT_POWER_USE_TOGGLE
+    bool current_known = false;
+    bool current_on = false;
+    if (is_light) {
+        ha_state_t current = {0};
+        if (ha_model_get_state(entity_id, &current)) {
+            if (strcmp(current.state, "on") == 0) {
+                current_known = true;
+                current_on = true;
+            } else if (strcmp(current.state, "off") == 0) {
+                current_known = true;
+                current_on = false;
+            }
+        }
+    }
+    if (current_known && (current_on == on)) {
+        return ESP_OK;
+    }
+#endif
+
+    if (!ui_bindings_allow_power_command_now(entity_id, true, on)) {
+        return ESP_OK;
+    }
+
+    const char *service = on ? HA_SERVICE_TURN_ON : HA_SERVICE_TURN_OFF;
+#if APP_HA_LIGHT_POWER_USE_TOGGLE
+    if (is_light && current_known) {
+        service = HA_SERVICE_TOGGLE;
+    }
+#endif
+
+    char payload[192] = {0};
+    if (is_light) {
+#if APP_HA_LIGHT_USE_TRANSITION_ZERO
+        snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\",\"transition\":0}", entity_id);
+#else
+        snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\"}", entity_id);
+#endif
+    } else {
+        snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\"}", entity_id);
+    }
+    esp_err_t err = ha_client_call_service(domain, service, payload);
+    if (err == ESP_OK) {
+        ui_bindings_apply_optimistic_power_state(entity_id, on);
+    } else {
+        ESP_LOGW(TAG, "set power failed entity=%s service=%s err=%s", entity_id, service, esp_err_to_name(err));
+    }
+    return err;
+}
+
+esp_err_t ui_bindings_set_slider_value(const char *entity_id, int value)
+{
+    if (entity_id == NULL || entity_id[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (value < 0) {
+        value = 0;
+    }
+    if (value > 100) {
+        value = 100;
+    }
+
+    char domain[32] = {0};
+    if (!split_entity_id(entity_id, domain, sizeof(domain))) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char payload[256] = {0};
+    const char *service = HA_SERVICE_SET_VALUE;
+
+    if (strcmp(domain, HA_DOMAIN_LIGHT) == 0) {
+        ha_state_t current = {0};
+        if (ha_model_get_state(entity_id, &current) && !ha_light_state_supports_dimming(&current)) {
+            ESP_LOGW(TAG, "light does not support brightness: %s", entity_id);
+            return ESP_ERR_NOT_SUPPORTED;
+        }
+        int brightness = (value * 255) / 100;
+        service = HA_SERVICE_TURN_ON;
+#if APP_HA_LIGHT_USE_TRANSITION_ZERO
+        snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\",\"brightness\":%d,\"transition\":0}", entity_id,
+            brightness);
+#else
+        snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\",\"brightness\":%d}", entity_id, brightness);
+#endif
+    } else if (strcmp(domain, HA_DOMAIN_MEDIA_PLAYER) == 0) {
+        service = "volume_set";
+        snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\",\"volume_level\":%.2f}", entity_id, (float)value / 100.0f);
+    } else if (strcmp(domain, HA_DOMAIN_CLIMATE) == 0) {
+        service = "set_temperature";
+        snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\",\"temperature\":%d}", entity_id, value);
+    } else {
+        snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\",\"value\":%d}", entity_id, value);
+    }
+
+    return ha_client_call_service(domain, service, payload);
+}
+
+esp_err_t ui_bindings_set_climate_target_c(const char *entity_id, float celsius)
+{
+    if (entity_id == NULL || entity_id[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (celsius < 5.0f) {
+        celsius = 5.0f;
+    }
+    if (celsius > 35.0f) {
+        celsius = 35.0f;
+    }
+    char domain[32] = {0};
+    if (!split_entity_id(entity_id, domain, sizeof(domain)) || strcmp(domain, HA_DOMAIN_CLIMATE) != 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    char payload[128] = {0};
+    snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\",\"temperature\":%.1f}", entity_id, (double)celsius);
+    return ha_client_call_service(domain, "set_temperature", payload);
+}
+
+/* Sends one of the string-typed climate controls (hvac/fan/swing/preset mode).
+ * The mode value is written verbatim into the payload, so callers must only pass
+ * values that the target entity advertises in its *_modes attribute. */
+static esp_err_t ui_bindings_set_climate_mode_string(const char *entity_id, const char *service,
+                                                     const char *payload_key, const char *mode)
+{
+    if (entity_id == NULL || entity_id[0] == '\0' || service == NULL || payload_key == NULL ||
+        mode == NULL || mode[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    char domain[32] = {0};
+    if (!split_entity_id(entity_id, domain, sizeof(domain)) || strcmp(domain, HA_DOMAIN_CLIMATE) != 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    char payload[160] = {0};
+    snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\",\"%s\":\"%s\"}", entity_id, payload_key, mode);
+    return ha_client_call_service(domain, service, payload);
+}
+
+esp_err_t ui_bindings_set_climate_hvac_mode(const char *entity_id, const char *hvac_mode)
+{
+    return ui_bindings_set_climate_mode_string(entity_id, HA_SERVICE_SET_HVAC_MODE, "hvac_mode", hvac_mode);
+}
+
+esp_err_t ui_bindings_set_climate_fan_mode(const char *entity_id, const char *fan_mode)
+{
+    return ui_bindings_set_climate_mode_string(entity_id, HA_SERVICE_SET_FAN_MODE, "fan_mode", fan_mode);
+}
+
+esp_err_t ui_bindings_set_climate_swing_mode(const char *entity_id, const char *swing_mode)
+{
+    return ui_bindings_set_climate_mode_string(entity_id, HA_SERVICE_SET_SWING_MODE, "swing_mode", swing_mode);
+}
+
+esp_err_t ui_bindings_set_climate_preset_mode(const char *entity_id, const char *preset_mode)
+{
+    return ui_bindings_set_climate_mode_string(entity_id, HA_SERVICE_SET_PRESET_MODE, "preset_mode", preset_mode);
+}
+
+esp_err_t ui_bindings_set_light_color_temp_kelvin(const char *entity_id, int kelvin)
+{
+    if (entity_id == NULL || entity_id[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (kelvin < 1000) {
+        kelvin = 1000;
+    }
+    if (kelvin > 12000) {
+        kelvin = 12000;
+    }
+
+    char domain[32] = {0};
+    if (!split_entity_id(entity_id, domain, sizeof(domain)) || strcmp(domain, HA_DOMAIN_LIGHT) != 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ha_state_t current = {0};
+    if (ha_model_get_state(entity_id, &current) && !ha_light_state_supports_color_temp(&current)) {
+        ESP_LOGW(TAG, "light does not support color temperature: %s", entity_id);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    char payload[256] = {0};
+#if APP_HA_LIGHT_USE_TRANSITION_ZERO
+    snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\",\"color_temp_kelvin\":%d,\"transition\":0}", entity_id,
+        kelvin);
+#else
+    snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\",\"color_temp_kelvin\":%d}", entity_id, kelvin);
+#endif
+
+    esp_err_t err = ha_client_call_service(HA_DOMAIN_LIGHT, HA_SERVICE_TURN_ON, payload);
+    if (err == ESP_OK) {
+        ui_bindings_apply_optimistic_power_state(entity_id, true);
+    } else {
+        ESP_LOGW(TAG, "set light color temperature failed entity=%s kelvin=%d err=%s", entity_id, kelvin,
+            esp_err_to_name(err));
+    }
+    return err;
+}
+
+esp_err_t ui_bindings_set_light_rgb_color(const char *entity_id, uint8_t r, uint8_t g, uint8_t b)
+{
+    if (entity_id == NULL || entity_id[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char domain[32] = {0};
+    if (!split_entity_id(entity_id, domain, sizeof(domain)) || strcmp(domain, HA_DOMAIN_LIGHT) != 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ha_state_t current = {0};
+    if (ha_model_get_state(entity_id, &current) && !ha_light_state_supports_color(&current)) {
+        ESP_LOGW(TAG, "light does not support RGB color: %s", entity_id);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    char payload[288] = {0};
+#if APP_HA_LIGHT_USE_TRANSITION_ZERO
+    snprintf(payload, sizeof(payload),
+        "{\"entity_id\":\"%s\",\"rgb_color\":[%u,%u,%u],\"transition\":0}", entity_id, (unsigned)r, (unsigned)g,
+        (unsigned)b);
+#else
+    snprintf(payload, sizeof(payload),
+        "{\"entity_id\":\"%s\",\"rgb_color\":[%u,%u,%u]}", entity_id, (unsigned)r, (unsigned)g, (unsigned)b);
+#endif
+
+    esp_err_t err = ha_client_call_service(HA_DOMAIN_LIGHT, HA_SERVICE_TURN_ON, payload);
+    if (err == ESP_OK) {
+        ui_bindings_apply_optimistic_power_state(entity_id, true);
+    } else {
+        ESP_LOGW(TAG, "set light RGB color failed entity=%s rgb=%u,%u,%u err=%s", entity_id, (unsigned)r,
+            (unsigned)g, (unsigned)b, esp_err_to_name(err));
+    }
+    return err;
+}
+
+esp_err_t ui_bindings_set_light_effect(const char *entity_id, const char *effect)
+{
+    if (entity_id == NULL || entity_id[0] == '\0' || effect == NULL || effect[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char domain[32] = {0};
+    if (!split_entity_id(entity_id, domain, sizeof(domain)) || strcmp(domain, HA_DOMAIN_LIGHT) != 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ha_state_t current = {0};
+    if (ha_model_get_state(entity_id, &current) && !ha_light_state_supports_effect(&current)) {
+        ESP_LOGW(TAG, "light does not support effects: %s", entity_id);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    /* Build the service payload with the effect name JSON-escaped so quotes or
+     * backslashes in effect names can't corrupt the request. */
+    char payload[320] = {0};
+    int off = snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\",\"effect\":\"", entity_id);
+    for (const char *p = effect; *p != '\0' && off < (int)sizeof(payload) - 6; ++p) {
+        if (*p == '"' || *p == '\\') {
+            payload[off++] = '\\';
+        }
+        payload[off++] = *p;
+    }
+    off += snprintf(payload + off, sizeof(payload) - off, "\"}");
+
+    esp_err_t err = ha_client_call_service(HA_DOMAIN_LIGHT, HA_SERVICE_TURN_ON, payload);
+    if (err == ESP_OK) {
+        ui_bindings_apply_optimistic_power_state(entity_id, true);
+    } else {
+        ESP_LOGW(TAG, "set light effect failed entity=%s effect=%s err=%s", entity_id, effect,
+            esp_err_to_name(err));
+    }
+    return err;
+}
+
+esp_err_t ui_bindings_media_player_action(const char *entity_id, ui_bindings_media_action_t action)
+{
+    if (entity_id == NULL || entity_id[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char domain[32] = {0};
+    if (!split_entity_id(entity_id, domain, sizeof(domain))) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (strcmp(domain, HA_DOMAIN_MEDIA_PLAYER) != 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const char *service = NULL;
+    switch (action) {
+    case UI_BINDINGS_MEDIA_ACTION_PLAY_PAUSE:
+        service = "media_play_pause";
+        break;
+    case UI_BINDINGS_MEDIA_ACTION_STOP:
+        service = "media_stop";
+        break;
+    case UI_BINDINGS_MEDIA_ACTION_NEXT:
+        service = "media_next_track";
+        break;
+    case UI_BINDINGS_MEDIA_ACTION_PREVIOUS:
+        service = "media_previous_track";
+        break;
+    default:
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char payload[192] = {0};
+    snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\"}", entity_id);
+
+    esp_err_t err = ha_client_call_service(domain, service, payload);
+    if (err == ESP_OK && action == UI_BINDINGS_MEDIA_ACTION_PLAY_PAUSE) {
+        ha_state_t current = {0};
+        if (ha_model_get_state(entity_id, &current) && strcmp(current.state, "playing") == 0) {
+            ui_bindings_apply_optimistic_state_text(entity_id, "paused");
+        } else {
+            ui_bindings_apply_optimistic_state_text(entity_id, "playing");
+        }
+    }
+    return err;
+}
+
+static bool ui_bindings_domain_is(const char *entity_id, const char *domain)
+{
+    char parsed[32] = {0};
+    return split_entity_id(entity_id, parsed, sizeof(parsed)) && strcmp(parsed, domain) == 0;
+}
+
+static void ui_bindings_json_escape_string(char *dst, size_t dst_size, const char *src)
+{
+    if (dst == NULL || dst_size == 0) {
+        return;
+    }
+    dst[0] = '\0';
+    if (src == NULL) {
+        return;
+    }
+    size_t off = 0;
+    for (const char *p = src; *p != '\0' && off + 6 < dst_size; ++p) {
+        if (*p == '"' || *p == '\\') {
+            dst[off++] = '\\';
+        }
+        dst[off++] = *p;
+    }
+    dst[off] = '\0';
+}
+
+esp_err_t ui_bindings_press_entity(const char *entity_id)
+{
+    if (entity_id == NULL || entity_id[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!ui_bindings_domain_is(entity_id, HA_DOMAIN_BUTTON)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    char payload[192] = {0};
+    snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\"}", entity_id);
+    return ha_client_call_service(HA_DOMAIN_BUTTON, HA_SERVICE_PRESS, payload);
+}
+
+esp_err_t ui_bindings_set_lock(const char *entity_id, bool locked)
+{
+    if (entity_id == NULL || entity_id[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!ui_bindings_domain_is(entity_id, HA_DOMAIN_LOCK)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    char payload[192] = {0};
+    snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\"}", entity_id);
+    esp_err_t err = ha_client_call_service(HA_DOMAIN_LOCK, locked ? "lock" : "unlock", payload);
+    if (err == ESP_OK) {
+        ui_bindings_apply_optimistic_state_text(entity_id, locked ? "locked" : "unlocked");
+    }
+    return err;
+}
+
+esp_err_t ui_bindings_cover_command(const char *entity_id, const char *command)
+{
+    if (entity_id == NULL || entity_id[0] == '\0' || command == NULL || command[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!ui_bindings_domain_is(entity_id, HA_DOMAIN_COVER)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (strcmp(command, "open") != 0 && strcmp(command, "close") != 0 && strcmp(command, "stop") != 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    char service[32] = {0};
+    if (strcmp(command, "open") == 0) {
+        snprintf(service, sizeof(service), "open_cover");
+    } else if (strcmp(command, "close") == 0) {
+        snprintf(service, sizeof(service), "close_cover");
+    } else {
+        snprintf(service, sizeof(service), "stop_cover");
+    }
+    char payload[192] = {0};
+    snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\"}", entity_id);
+    esp_err_t err = ha_client_call_service(HA_DOMAIN_COVER, service, payload);
+    if (err == ESP_OK && strcmp(command, "stop") == 0) {
+        ui_bindings_apply_optimistic_state_text(entity_id, "stopped");
+    }
+    return err;
+}
+
+esp_err_t ui_bindings_cover_set_position(const char *entity_id, int position_pct)
+{
+    if (entity_id == NULL || entity_id[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!ui_bindings_domain_is(entity_id, HA_DOMAIN_COVER)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (position_pct < 0) {
+        position_pct = 0;
+    }
+    if (position_pct > 100) {
+        position_pct = 100;
+    }
+    char payload[192] = {0};
+    snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\",\"position\":%d}", entity_id, position_pct);
+    return ha_client_call_service(HA_DOMAIN_COVER, "set_cover_position", payload);
+}
+
+esp_err_t ui_bindings_set_fan_power(const char *entity_id, bool on)
+{
+    if (entity_id == NULL || entity_id[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!ui_bindings_domain_is(entity_id, HA_DOMAIN_FAN)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    char payload[192] = {0};
+    snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\"}", entity_id);
+    esp_err_t err = ha_client_call_service(
+        HA_DOMAIN_FAN, on ? HA_SERVICE_TURN_ON : HA_SERVICE_TURN_OFF, payload);
+    if (err == ESP_OK) {
+        ui_bindings_apply_optimistic_power_state(entity_id, on);
+    }
+    return err;
+}
+
+esp_err_t ui_bindings_set_fan_percentage(const char *entity_id, int percent)
+{
+    if (entity_id == NULL || entity_id[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!ui_bindings_domain_is(entity_id, HA_DOMAIN_FAN)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (percent < 0) {
+        percent = 0;
+    }
+    if (percent > 100) {
+        percent = 100;
+    }
+    char payload[192] = {0};
+    if (percent <= 0) {
+        snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\"}", entity_id);
+        return ha_client_call_service(HA_DOMAIN_FAN, HA_SERVICE_TURN_OFF, payload);
+    }
+    snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\",\"percentage\":%d}", entity_id, percent);
+    return ha_client_call_service(HA_DOMAIN_FAN, "set_percentage", payload);
+}
+
+esp_err_t ui_bindings_number_set_value(const char *entity_id, double value)
+{
+    if (entity_id == NULL || entity_id[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    char domain[32] = {0};
+    if (!split_entity_id(entity_id, domain, sizeof(domain))) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (strcmp(domain, HA_DOMAIN_NUMBER) != 0 && strcmp(domain, HA_DOMAIN_INPUT_NUMBER) != 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    char payload[192] = {0};
+    snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\",\"value\":%.6g}", entity_id, value);
+    return ha_client_call_service(domain, HA_SERVICE_SET_VALUE, payload);
+}
+
+esp_err_t ui_bindings_select_option(const char *entity_id, const char *option)
+{
+    if (entity_id == NULL || entity_id[0] == '\0' || option == NULL || option[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    char domain[32] = {0};
+    if (!split_entity_id(entity_id, domain, sizeof(domain))) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (strcmp(domain, HA_DOMAIN_SELECT) != 0 && strcmp(domain, HA_DOMAIN_INPUT_SELECT) != 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    char escaped[128] = {0};
+    ui_bindings_json_escape_string(escaped, sizeof(escaped), option);
+    char payload[256] = {0};
+    snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\",\"option\":\"%s\"}", entity_id, escaped);
+    return ha_client_call_service(domain, "select_option", payload);
+}

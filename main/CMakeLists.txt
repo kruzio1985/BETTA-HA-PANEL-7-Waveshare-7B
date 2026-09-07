@@ -1,0 +1,483 @@
+# SPDX-License-Identifier: LicenseRef-FNCL-1.1
+# Copyright (c) 2026 Cpt_Kirk
+
+# ---- Panel-variant-specific driver sources --------------------------------
+# The 4" (smart86) and 10.1" (nano) panels use different BSPs and different
+# touch controllers, so their display_init/touch_init implementations live
+# in separate source files.  Exactly one pair is compiled per build.
+if(CONFIG_APP_PANEL_VARIANT_10INCH_1280)
+    set(PANEL_DRIVER_SRCS
+        "drivers/display_init_panel10.c"
+        "drivers/touch_init_panel10.c"
+    )
+elseif(CONFIG_APP_PANEL_VARIANT_S3_480)
+    set(PANEL_DRIVER_SRCS
+        "drivers/display_init_panels3.c"
+        "drivers/touch_init_panels3.c"
+    )
+elseif(CONFIG_APP_PANEL_VARIANT_7INCH_1024)
+    set(PANEL_DRIVER_SRCS
+        "drivers/display_init_panel7.c"
+        "drivers/touch_init_panel7.c"
+    )
+else()
+    set(PANEL_DRIVER_SRCS
+        "drivers/display_init_panel4.c"
+        "drivers/touch_init_panel4.c"
+    )
+endif()
+
+idf_component_register(
+    SRCS
+        "app_main.c"
+        "app_events.c"
+        "api/http_server.c"
+        "api/http_guard.c"
+        "api/api_routes.c"
+        "api/api_layout.c"
+        "api/api_energy.c"
+        "api/api_entities.c"
+        "api/api_state.c"
+        "api/api_settings.c"
+        "api/api_i18n.c"
+        "api/api_wifi.c"
+        "api/api_version.c"
+        "api/api_screenshot.c"
+        "api/api_ota.c"
+        "api/api_theme.c"
+        "api/api_ha_diagnostics.c"
+        "api/api_cameras.c"
+        "api/api_system_log.c"
+        "diag/system_log.c"
+        ${PANEL_DRIVER_SRCS}
+        "ha/ha_client.c"
+        "ha/ha_ws.c"
+        "ha/ha_model.c"
+        "ha/ha_energy_model.c"
+        "ha/ha_light_capabilities.c"
+        "ha/ha_cover_fetcher.c"
+        "layout/layout_store.c"
+        "layout/layout_validate.c"
+        "settings/runtime_settings.c"
+        "settings/i18n_store.c"
+        "net/wifi_mgr.c"
+        "net/time_sync.c"
+        "ui/ui_runtime.c"
+        "ui/ui_boot_splash.c"
+        "ui/ui_ota_progress.c"
+        "ui/ui_pages.c"
+        "ui/ui_settings.c"
+        "ui/ui_energy_page.c"
+        "ui/ui_cameras_page.c"
+        "ui/ui_i18n.c"
+        "ui/ui_widget_factory.c"
+        "ui/ui_bindings.c"
+        "ui/lv_psram_mem.c"
+        "ui/widgets/w_sensor.c"
+        "ui/widgets/w_button.c"
+        "ui/widgets/w_slider.c"
+        "ui/widgets/w_graph.c"
+        "ui/widgets/w_empty_tile.c"
+        "ui/widgets/w_light_tile.c"
+        "ui/widgets/w_heating_tile.c"
+        "ui/widgets/w_weather_tile.c"
+        "ui/widgets/w_todo.c"
+        "ui/widgets/w_media_player.c"
+        "ui/widgets/w_roborock.c"
+        "ui/widgets/w_binary_sensor.c"
+        "ui/widgets/w_presence.c"
+        "ui/widgets/w_cover.c"
+        "ui/widgets/w_lock.c"
+        "ui/widgets/w_fan.c"
+        "ui/widgets/w_select.c"
+        "ui/widgets/w_number.c"
+        "ui/fonts/mdi_font_registry.c"
+        "ui/theme/theme_default.c"
+        "ui/theme/theme_palette.c"
+        "ui/theme/theme_store.c"
+        "camera/camera_store.c"
+        "util/json_util.c"
+        "util/ringbuf.c"
+        "xiaozhi/xiaozhi_activate.c"
+        "xiaozhi/xiaozhi_audio.c"
+        "xiaozhi/xiaozhi_client.c"
+        "xiaozhi/xiaozhi_ui.c"
+    INCLUDE_DIRS
+        "."
+        "api"
+        "camera"
+        "diag"
+        "drivers"
+        "ha"
+        "layout"
+        "net"
+        "ui"
+        "ui/theme"
+        "util"
+        "xiaozhi"
+    REQUIRES
+        nvs_flash
+        bootloader_support
+        esp_netif
+        esp_event
+        esp_wifi
+        esp_driver_gpio
+        esp_driver_i2c
+        esp_driver_ledc
+        esp_websocket_client
+        esp_http_client
+        esp_http_server
+        esp_rom
+        esp_timer
+        app_update
+        esp_app_format
+        spi_flash
+        esp_lcd
+        lvgl
+        json
+        littlefs
+        webui
+        esp_driver_jpeg
+        esp_codec_dev
+        esp-tls
+)
+
+# ESP-Hosted (P4 + C6 coprocessor) is only used by panel4 / panel10.
+# panels3 (ESP32-S3) has native Wi-Fi and must not pull in the hosted stack.
+if(NOT CONFIG_APP_PANEL_VARIANT_S3_480)
+    idf_component_optional_requires(PRIVATE esp_wifi_remote esp_hosted)
+endif()
+
+# panels3 has no upstream ESP-BSP package: provide a minimal local shim of
+# `bsp/display.h` so files including it (e.g. api_settings.c, api_ota.c)
+# compile. The corresponding stub implementations live in
+# drivers/display_init_panels3.c.
+if(CONFIG_APP_PANEL_VARIANT_S3_480)
+    target_include_directories(${COMPONENT_LIB} PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/drivers/panels3_bsp_shim"
+    )
+endif()
+
+set(APP_HAVE_HOSTED_C6_FW_IMAGE 0)
+if(NOT CONFIG_APP_PANEL_VARIANT_S3_480)
+set(HOSTED_C6_FW_BIN "")
+set(HOSTED_C6_FW_EMBED_DIR "${CMAKE_CURRENT_BINARY_DIR}/hosted_c6_fw")
+set(HOSTED_C6_FW_BIN_RELEASE_GENERIC "${CMAKE_SOURCE_DIR}/release/network_adapter_esp32c6.bin")
+file(MAKE_DIRECTORY "${HOSTED_C6_FW_EMBED_DIR}")
+
+set(HOSTED_C6_HOST_VERSION_FILE
+    "${CMAKE_CURRENT_LIST_DIR}/../managed_components/espressif__esp_hosted/host/esp_hosted_host_fw_ver.h")
+set(HOSTED_C6_EXPECTED_VERSION "unknown")
+if(EXISTS "${HOSTED_C6_HOST_VERSION_FILE}")
+    file(READ "${HOSTED_C6_HOST_VERSION_FILE}" HOSTED_C6_HOST_VERSION_TEXT)
+    string(REGEX MATCH "#define[ \t]+ESP_HOSTED_VERSION_MAJOR_1[ \t]+([0-9]+)"
+        _HOSTED_C6_MAJOR_MATCH "${HOSTED_C6_HOST_VERSION_TEXT}")
+    set(HOSTED_C6_VER_MAJOR "${CMAKE_MATCH_1}")
+    string(REGEX MATCH "#define[ \t]+ESP_HOSTED_VERSION_MINOR_1[ \t]+([0-9]+)"
+        _HOSTED_C6_MINOR_MATCH "${HOSTED_C6_HOST_VERSION_TEXT}")
+    set(HOSTED_C6_VER_MINOR "${CMAKE_MATCH_1}")
+    string(REGEX MATCH "#define[ \t]+ESP_HOSTED_VERSION_PATCH_1[ \t]+([0-9]+)"
+        _HOSTED_C6_PATCH_MATCH "${HOSTED_C6_HOST_VERSION_TEXT}")
+    set(HOSTED_C6_VER_PATCH "${CMAKE_MATCH_1}")
+    if(NOT HOSTED_C6_VER_MAJOR STREQUAL "" AND
+       NOT HOSTED_C6_VER_MINOR STREQUAL "" AND
+       NOT HOSTED_C6_VER_PATCH STREQUAL "")
+        set(HOSTED_C6_EXPECTED_VERSION
+            "${HOSTED_C6_VER_MAJOR}.${HOSTED_C6_VER_MINOR}.${HOSTED_C6_VER_PATCH}")
+    endif()
+endif()
+
+if(NOT HOSTED_C6_EXPECTED_VERSION STREQUAL "unknown")
+    set(HOSTED_C6_FW_BIN_RELEASE_VERSIONED
+        "${CMAKE_SOURCE_DIR}/release/network_adapter_esp32c6_${HOSTED_C6_EXPECTED_VERSION}.bin")
+endif()
+if(DEFINED HOSTED_C6_FW_BIN_RELEASE_VERSIONED AND EXISTS "${HOSTED_C6_FW_BIN_RELEASE_VERSIONED}")
+    set(HOSTED_C6_FW_BIN "${HOSTED_C6_FW_BIN_RELEASE_VERSIONED}")
+    message(STATUS "Using release C6 firmware image: ${HOSTED_C6_FW_BIN_RELEASE_VERSIONED}")
+elseif(EXISTS "${HOSTED_C6_FW_BIN_RELEASE_GENERIC}")
+    set(HOSTED_C6_FW_BIN "${HOSTED_C6_FW_BIN_RELEASE_GENERIC}")
+    message(STATUS "Using release C6 firmware image: ${HOSTED_C6_FW_BIN_RELEASE_GENERIC}")
+elseif(NOT HOSTED_C6_EXPECTED_VERSION STREQUAL "unknown")
+    message(WARNING
+        "Missing release C6 firmware image for host version ${HOSTED_C6_EXPECTED_VERSION}. "
+        "Expected: ${CMAKE_SOURCE_DIR}/release/network_adapter_esp32c6_${HOSTED_C6_EXPECTED_VERSION}.bin")
+endif()
+
+if(HOSTED_C6_FW_BIN)
+    set(HOSTED_C6_FW_EMBED "${HOSTED_C6_FW_EMBED_DIR}/hosted_c6_fw.bin")
+    configure_file("${HOSTED_C6_FW_BIN}" "${HOSTED_C6_FW_EMBED}" COPYONLY)
+    target_add_binary_data(${COMPONENT_LIB} "${HOSTED_C6_FW_EMBED}" BINARY)
+    set(APP_HAVE_HOSTED_C6_FW_IMAGE 1)
+    message(STATUS "Embedding ESP-Hosted C6 firmware image: ${HOSTED_C6_FW_BIN}")
+else()
+    message(WARNING
+        "No ESP-Hosted C6 firmware image found in release/. "
+        "Runtime C6 auto-update will be skipped until a release image is provided.")
+endif()
+endif() # NOT CONFIG_APP_PANEL_VARIANT_S3_480
+
+target_compile_definitions(${COMPONENT_LIB} PRIVATE APP_HAVE_HOSTED_C6_FW_IMAGE=${APP_HAVE_HOSTED_C6_FW_IMAGE})
+
+set(SPLASH_HOUSE_IMAGE_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/assets/splash_house_image.c")
+if(EXISTS "${SPLASH_HOUSE_IMAGE_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${SPLASH_HOUSE_IMAGE_SOURCE}")
+endif()
+
+set(SPLASH_SMART86_BETTA_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/assets/SMART86OS_Betta.c")
+set(SPLASH_SMART86_BETTA_AVAILABLE 0)
+if(EXISTS "${SPLASH_SMART86_BETTA_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${SPLASH_SMART86_BETTA_SOURCE}")
+    set(SPLASH_SMART86_BETTA_AVAILABLE 1)
+endif()
+target_compile_definitions(${COMPONENT_LIB} PRIVATE APP_HAVE_SMART86OS_BETTA_IMAGE=${SPLASH_SMART86_BETTA_AVAILABLE})
+
+set(LIGHT_TEMP_BUTTON_IMAGE_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/assets/Temp.c")
+set(LIGHT_RGB_BUTTON_IMAGE_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/assets/RGB.c")
+set(LIGHT_RGB_SLIDER_IMAGE_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/assets/visiblecolor.c")
+set(LIGHT_COLOR_BUTTON_IMAGES_AVAILABLE 0)
+set(LIGHT_RGB_SLIDER_IMAGE_AVAILABLE 0)
+if(EXISTS "${LIGHT_TEMP_BUTTON_IMAGE_SOURCE}" AND EXISTS "${LIGHT_RGB_BUTTON_IMAGE_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${LIGHT_TEMP_BUTTON_IMAGE_SOURCE}" "${LIGHT_RGB_BUTTON_IMAGE_SOURCE}")
+    set(LIGHT_COLOR_BUTTON_IMAGES_AVAILABLE 1)
+endif()
+if(EXISTS "${LIGHT_RGB_SLIDER_IMAGE_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${LIGHT_RGB_SLIDER_IMAGE_SOURCE}")
+    set(LIGHT_RGB_SLIDER_IMAGE_AVAILABLE 1)
+endif()
+target_compile_definitions(
+    ${COMPONENT_LIB}
+    PRIVATE
+        APP_HAVE_LIGHT_COLOR_BUTTON_IMAGES=${LIGHT_COLOR_BUTTON_IMAGES_AVAILABLE}
+        APP_HAVE_LIGHT_RGB_SLIDER_IMAGE=${LIGHT_RGB_SLIDER_IMAGE_AVAILABLE})
+
+set(MDI_TOP50_FONT72_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/fonts/mditop50icons72.c")
+set(MDI_TOP50_FONT56_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/fonts/mditop50icons56.c")
+set(MDI_TOP50_FONT42_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/fonts/mditop50icons42.c")
+set(MDI_TOP50_FONT_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/fonts/mditop50icons.c")
+set(MDI_STANDARD_FONT_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/fonts/mdi_standard_icons_56.c")
+set(MDI_WEATHER_FONT20_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/fonts/mdiweatherIcons20.c")
+set(MDI_ENERGY_FONT42_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/fonts/mdi_energy_42.c")
+set(MDI_ARROWS_FONT20_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/fonts/mdi_arrows_20.c")
+set(POPPINS_REGULAR_12_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/fonts/poppins_regular_12.c")
+set(POPPINS_REGULAR_14_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/fonts/poppins_regular_14.c")
+set(POPPINS_REGULAR_16_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/fonts/poppins_regular_16.c")
+set(POPPINS_REGULAR_18_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/fonts/poppins_regular_18.c")
+set(POPPINS_REGULAR_20_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/fonts/poppins_regular_20.c")
+set(POPPINS_REGULAR_22_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/fonts/poppins_regular_22.c")
+set(POPPINS_REGULAR_24_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/fonts/poppins_regular_24.c")
+set(POPPINS_REGULAR_28_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/fonts/poppins_regular_28.c")
+set(POPPINS_REGULAR_34_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/fonts/poppins_regular_34.c")
+set(POPPINS_REGULAR_36_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/fonts/poppins_regular_36.c")
+set(POPPINS_REGULAR_38_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/fonts/poppins_regular_38.c")
+set(POPPINS_REGULAR_40_SOURCE "${CMAKE_CURRENT_LIST_DIR}/ui/fonts/poppins_regular_40.c")
+
+set(MDI_TOP50_FONT72_AVAILABLE 0)
+if(EXISTS "${MDI_TOP50_FONT72_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${MDI_TOP50_FONT72_SOURCE}")
+    set(MDI_TOP50_FONT72_AVAILABLE 1)
+endif()
+
+set(MDI_TOP50_FONT56_AVAILABLE 0)
+if(EXISTS "${MDI_TOP50_FONT56_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${MDI_TOP50_FONT56_SOURCE}")
+    set(MDI_TOP50_FONT56_AVAILABLE 1)
+endif()
+
+set(MDI_TOP50_FONT42_AVAILABLE 0)
+if(EXISTS "${MDI_TOP50_FONT42_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${MDI_TOP50_FONT42_SOURCE}")
+    set(MDI_TOP50_FONT42_AVAILABLE 1)
+endif()
+
+set(MDI_WEATHER_FONT20_AVAILABLE 0)
+if(EXISTS "${MDI_WEATHER_FONT20_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${MDI_WEATHER_FONT20_SOURCE}")
+    set(MDI_WEATHER_FONT20_AVAILABLE 1)
+endif()
+
+set(APP_HAVE_MDI_ENERGY_FONT_42 0)
+if(EXISTS "${MDI_ENERGY_FONT42_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${MDI_ENERGY_FONT42_SOURCE}")
+    set(APP_HAVE_MDI_ENERGY_FONT_42 1)
+endif()
+
+set(APP_HAVE_MDI_ARROWS_FONT_20 0)
+if(EXISTS "${MDI_ARROWS_FONT20_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${MDI_ARROWS_FONT20_SOURCE}")
+    set(APP_HAVE_MDI_ARROWS_FONT_20 1)
+endif()
+
+set(APP_HAVE_MDI_ENERGY_FONT_100 0)
+if(EXISTS "${MDI_ENERGY_FONT100_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${MDI_ENERGY_FONT100_SOURCE}")
+    set(APP_HAVE_MDI_ENERGY_FONT_100 1)
+endif()
+
+set(APP_HAVE_POPPINS_REGULAR_12 0)
+if(EXISTS "${POPPINS_REGULAR_12_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${POPPINS_REGULAR_12_SOURCE}")
+    set(APP_HAVE_POPPINS_REGULAR_12 1)
+endif()
+
+set(APP_HAVE_POPPINS_REGULAR_14 0)
+if(EXISTS "${POPPINS_REGULAR_14_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${POPPINS_REGULAR_14_SOURCE}")
+    set(APP_HAVE_POPPINS_REGULAR_14 1)
+endif()
+
+set(APP_HAVE_POPPINS_REGULAR_16 0)
+if(EXISTS "${POPPINS_REGULAR_16_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${POPPINS_REGULAR_16_SOURCE}")
+    set(APP_HAVE_POPPINS_REGULAR_16 1)
+endif()
+
+set(APP_HAVE_POPPINS_REGULAR_18 0)
+if(EXISTS "${POPPINS_REGULAR_18_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${POPPINS_REGULAR_18_SOURCE}")
+    set(APP_HAVE_POPPINS_REGULAR_18 1)
+endif()
+
+set(APP_HAVE_POPPINS_REGULAR_20 0)
+if(EXISTS "${POPPINS_REGULAR_20_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${POPPINS_REGULAR_20_SOURCE}")
+    set(APP_HAVE_POPPINS_REGULAR_20 1)
+endif()
+
+set(APP_HAVE_POPPINS_REGULAR_22 0)
+if(EXISTS "${POPPINS_REGULAR_22_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${POPPINS_REGULAR_22_SOURCE}")
+    set(APP_HAVE_POPPINS_REGULAR_22 1)
+endif()
+
+set(APP_HAVE_POPPINS_REGULAR_24 0)
+if(EXISTS "${POPPINS_REGULAR_24_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${POPPINS_REGULAR_24_SOURCE}")
+    set(APP_HAVE_POPPINS_REGULAR_24 1)
+endif()
+
+set(APP_HAVE_POPPINS_REGULAR_28 0)
+if(EXISTS "${POPPINS_REGULAR_28_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${POPPINS_REGULAR_28_SOURCE}")
+    set(APP_HAVE_POPPINS_REGULAR_28 1)
+endif()
+
+set(APP_HAVE_POPPINS_REGULAR_34 0)
+if(EXISTS "${POPPINS_REGULAR_34_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${POPPINS_REGULAR_34_SOURCE}")
+    set(APP_HAVE_POPPINS_REGULAR_34 1)
+endif()
+
+set(APP_HAVE_POPPINS_REGULAR_36 0)
+if(EXISTS "${POPPINS_REGULAR_36_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${POPPINS_REGULAR_36_SOURCE}")
+    set(APP_HAVE_POPPINS_REGULAR_36 1)
+endif()
+
+set(APP_HAVE_POPPINS_REGULAR_38 0)
+if(EXISTS "${POPPINS_REGULAR_38_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${POPPINS_REGULAR_38_SOURCE}")
+    set(APP_HAVE_POPPINS_REGULAR_38 1)
+endif()
+
+set(APP_HAVE_POPPINS_REGULAR_40 0)
+if(EXISTS "${POPPINS_REGULAR_40_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${POPPINS_REGULAR_40_SOURCE}")
+    set(APP_HAVE_POPPINS_REGULAR_40 1)
+endif()
+
+if(MDI_TOP50_FONT42_AVAILABLE OR MDI_TOP50_FONT56_AVAILABLE OR MDI_TOP50_FONT72_AVAILABLE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE APP_HAVE_MDI_ICON_FONT=1 APP_HAVE_MDI_TOP50_FONT=1 APP_HAVE_MDI_TOP50_FONT_72=${MDI_TOP50_FONT72_AVAILABLE} APP_HAVE_MDI_TOP50_FONT_56=${MDI_TOP50_FONT56_AVAILABLE} APP_HAVE_MDI_TOP50_FONT_42=${MDI_TOP50_FONT42_AVAILABLE} APP_HAVE_MDI_TOP50_FONT_LEGACY=0 APP_HAVE_MDI_STANDARD_FONT=0 APP_HAVE_MDI_WEATHER_FONT_20=${MDI_WEATHER_FONT20_AVAILABLE})
+elseif(EXISTS "${MDI_TOP50_FONT_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${MDI_TOP50_FONT_SOURCE}")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE APP_HAVE_MDI_ICON_FONT=1 APP_HAVE_MDI_TOP50_FONT=1 APP_HAVE_MDI_TOP50_FONT_72=0 APP_HAVE_MDI_TOP50_FONT_56=0 APP_HAVE_MDI_TOP50_FONT_42=0 APP_HAVE_MDI_TOP50_FONT_LEGACY=1 APP_HAVE_MDI_STANDARD_FONT=0 APP_HAVE_MDI_WEATHER_FONT_20=${MDI_WEATHER_FONT20_AVAILABLE})
+elseif(EXISTS "${MDI_STANDARD_FONT_SOURCE}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${MDI_STANDARD_FONT_SOURCE}")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE APP_HAVE_MDI_ICON_FONT=1 APP_HAVE_MDI_TOP50_FONT=0 APP_HAVE_MDI_TOP50_FONT_72=0 APP_HAVE_MDI_TOP50_FONT_56=0 APP_HAVE_MDI_TOP50_FONT_42=0 APP_HAVE_MDI_TOP50_FONT_LEGACY=0 APP_HAVE_MDI_STANDARD_FONT=1 APP_HAVE_MDI_WEATHER_FONT_20=${MDI_WEATHER_FONT20_AVAILABLE})
+else()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE APP_HAVE_MDI_ICON_FONT=0 APP_HAVE_MDI_TOP50_FONT=0 APP_HAVE_MDI_TOP50_FONT_72=0 APP_HAVE_MDI_TOP50_FONT_56=0 APP_HAVE_MDI_TOP50_FONT_42=0 APP_HAVE_MDI_TOP50_FONT_LEGACY=0 APP_HAVE_MDI_STANDARD_FONT=0 APP_HAVE_MDI_WEATHER_FONT_20=${MDI_WEATHER_FONT20_AVAILABLE})
+endif()
+
+target_compile_definitions(
+    ${COMPONENT_LIB}
+    PRIVATE
+        APP_HAVE_POPPINS_REGULAR_12=${APP_HAVE_POPPINS_REGULAR_12}
+        APP_HAVE_POPPINS_REGULAR_14=${APP_HAVE_POPPINS_REGULAR_14}
+        APP_HAVE_POPPINS_REGULAR_16=${APP_HAVE_POPPINS_REGULAR_16}
+        APP_HAVE_POPPINS_REGULAR_18=${APP_HAVE_POPPINS_REGULAR_18}
+        APP_HAVE_POPPINS_REGULAR_20=${APP_HAVE_POPPINS_REGULAR_20}
+        APP_HAVE_POPPINS_REGULAR_22=${APP_HAVE_POPPINS_REGULAR_22}
+        APP_HAVE_POPPINS_REGULAR_24=${APP_HAVE_POPPINS_REGULAR_24}
+        APP_HAVE_POPPINS_REGULAR_28=${APP_HAVE_POPPINS_REGULAR_28}
+        APP_HAVE_POPPINS_REGULAR_34=${APP_HAVE_POPPINS_REGULAR_34}
+        APP_HAVE_POPPINS_REGULAR_36=${APP_HAVE_POPPINS_REGULAR_36}
+        APP_HAVE_POPPINS_REGULAR_38=${APP_HAVE_POPPINS_REGULAR_38}
+        APP_HAVE_POPPINS_REGULAR_40=${APP_HAVE_POPPINS_REGULAR_40}
+        APP_HAVE_MDI_ENERGY_FONT_42=${APP_HAVE_MDI_ENERGY_FONT_42}
+        APP_HAVE_MDI_ENERGY_FONT_100=${APP_HAVE_MDI_ENERGY_FONT_100}
+        APP_HAVE_MDI_ARROWS_FONT_20=${APP_HAVE_MDI_ARROWS_FONT_20})
+
+set(APP_UI_WEATHER_LOTTIE_ASSETS 0)
+set(APP_UI_BETTA_LOTTIE_ASSET 0)
+if(CONFIG_LV_USE_LOTTIE AND NOT CONFIG_APP_PANEL_VARIANT_S3_480)
+    set(APP_UI_WEATHER_LOTTIE_ASSETS 1)
+    set(WEATHER_LOTTIE_DIR "${CMAKE_CURRENT_LIST_DIR}/ui/weather_icons/fill/lottie")
+    set(WEATHER_LOTTIE_EMBEDS
+        "clear-day:clear_day"
+        "clear-night:clear_night"
+        "cloudy:cloudy"
+        "fog:fog"
+        "hail:hail"
+        "partly-cloudy-day:partly_cloudy_day"
+        "partly-cloudy-night:partly_cloudy_night"
+        "sleet:sleet"
+        "wind:wind"
+        "overcast-day:overcast_day"
+        "extreme:extreme"
+        "extreme-rain:extreme_rain"
+        "rain:rain"
+        "snow:snow"
+        "thunderstorms:thunderstorms"
+        "thunderstorms-rain:thunderstorms_rain")
+
+    foreach(WEATHER_LOTTIE_PAIR IN LISTS WEATHER_LOTTIE_EMBEDS)
+        string(REPLACE ":" ";" WEATHER_LOTTIE_PARTS "${WEATHER_LOTTIE_PAIR}")
+        list(GET WEATHER_LOTTIE_PARTS 0 WEATHER_LOTTIE_SRC_STEM)
+        list(GET WEATHER_LOTTIE_PARTS 1 WEATHER_LOTTIE_DST_STEM)
+
+        set(WEATHER_LOTTIE_SRC_FILE "${WEATHER_LOTTIE_DIR}/${WEATHER_LOTTIE_SRC_STEM}.json")
+        set(WEATHER_LOTTIE_EMBED_FILE "${CMAKE_CURRENT_BINARY_DIR}/weather_${WEATHER_LOTTIE_DST_STEM}.json")
+        if(EXISTS "${WEATHER_LOTTIE_SRC_FILE}")
+            configure_file("${WEATHER_LOTTIE_SRC_FILE}" "${WEATHER_LOTTIE_EMBED_FILE}" COPYONLY)
+            target_add_binary_data(${COMPONENT_LIB} "${WEATHER_LOTTIE_EMBED_FILE}" TEXT)
+        else()
+            set(APP_UI_WEATHER_LOTTIE_ASSETS 0)
+            message(WARNING "Missing weather lottie asset: ${WEATHER_LOTTIE_SRC_FILE}")
+        endif()
+    endforeach()
+
+    # Easter-egg betta fish lottie (shown after 7 taps on the nav-bar home button).
+    set(BETTA_LOTTIE_SRC_FILE "${CMAKE_CURRENT_LIST_DIR}/ui/assets/betta.json")
+    set(BETTA_LOTTIE_EMBED_FILE "${CMAKE_CURRENT_BINARY_DIR}/betta.json")
+    if(EXISTS "${BETTA_LOTTIE_SRC_FILE}")
+        configure_file("${BETTA_LOTTIE_SRC_FILE}" "${BETTA_LOTTIE_EMBED_FILE}" COPYONLY)
+        target_add_binary_data(${COMPONENT_LIB} "${BETTA_LOTTIE_EMBED_FILE}" TEXT)
+        set(APP_UI_BETTA_LOTTIE_ASSET 1)
+    else()
+        message(WARNING "Missing betta lottie asset: ${BETTA_LOTTIE_SRC_FILE}")
+    endif()
+endif()
+
+target_compile_definitions(${COMPONENT_LIB} PRIVATE APP_UI_WEATHER_LOTTIE_ASSETS=${APP_UI_WEATHER_LOTTIE_ASSETS})
+target_compile_definitions(${COMPONENT_LIB} PRIVATE APP_UI_BETTA_LOTTIE_ASSET=${APP_UI_BETTA_LOTTIE_ASSET})
+
+# Keep strict warnings in project code, but silence an upstream ThorVG warning in lvgl.
+if(TARGET __idf_lvgl__lvgl)
+    target_compile_options(__idf_lvgl__lvgl PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wno-type-limits>)
+endif()
+
+# Xtensa GCC can ICE in the ESP-IDF RGB LCD driver on the S3/panels3 build
+# during register allocation. Keep the workaround scoped to that upstream
+# component and this panel variant.
+if(CONFIG_APP_PANEL_VARIANT_S3_480 AND TARGET __idf_esp_lcd)
+    target_compile_options(__idf_esp_lcd PRIVATE -O1)
+endif()

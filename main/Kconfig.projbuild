@@ -1,0 +1,165 @@
+# SPDX-License-Identifier: LicenseRef-FNCL-1.1
+# Copyright (c) 2026 Cpt_Kirk
+menu "Example Configuration"
+
+menu "Panel Hardware Variant"
+
+choice APP_PANEL_VARIANT
+    prompt "Display panel variant"
+    default APP_PANEL_VARIANT_4INCH_720
+    help
+        Select the physical LCD / touch panel this firmware image targets.
+        Affects screen resolution (APP_SCREEN_WIDTH/HEIGHT), panel init
+        sequence and touch-controller driver selection.
+
+config APP_PANEL_VARIANT_4INCH_720
+    bool "4\" 720x720 round (smart86 base)"
+    help
+        Original smart86 4-inch 720x720 square/round panel.
+
+config APP_PANEL_VARIANT_10INCH_1280
+    bool "10.1\" 1280x800 (betta large)"
+    help
+        10.1-inch 1280x800 panel variant.
+
+config APP_PANEL_VARIANT_S3_480
+    bool "4\" 480x480 (Guition CYD ESP32-S3 4848S040)"
+    help
+        Guition CYD ESP32-S3 4848S040 4-inch 480x480 RGB panel
+        with ST7701S controller and GT911 capacitive touch.
+        Native Wi-Fi (no ESP-Hosted/C6 coprocessor).
+
+config APP_PANEL_VARIANT_7INCH_1024
+    bool "7\" 1024x600 (Waveshare ESP32-P4-WIFI6-Touch-LCD-7B)"
+    help
+        Waveshare ESP32-P4-WIFI6-Touch-LCD-7B 7-inch 1024x600
+        MIPI-DSI panel (EK79007) with GT911 capacitive touch.
+
+endchoice
+
+endmenu
+
+menu "Wi-Fi Station"
+
+config APP_WIFI_SSID
+    string "Wi-Fi SSID"
+    default "YOUR_WIFI_SSID"
+    help
+        SSID of your access point.
+        ESP32-C6 supports 2.4 GHz Wi-Fi.
+
+config APP_WIFI_PASSWORD
+    string "Wi-Fi Password"
+    default "YOUR_WIFI_PASSWORD"
+    help
+        Password for your access point.
+        Set empty only for open networks.
+
+config APP_WIFI_COUNTRY_CODE
+    string "Wi-Fi country code (ISO-3166 alpha-2)"
+    default "US"
+    help
+        Two-letter country code used for Wi-Fi regulatory domain
+        (for example US, DE, FR). This is used as default and can
+        be overridden at runtime in provisioning/settings.
+
+config APP_WIFI_WAIT_FOR_IP
+    bool "Wait for IP before continuing boot"
+    default y
+    help
+        If enabled, startup waits until station got IP or timeout.
+
+config APP_WIFI_CONNECT_TIMEOUT_MS
+    int "Wi-Fi connect timeout (ms)"
+    range 1000 120000
+    default 15000
+    help
+        Maximum time to wait for IP when wait-for-IP is enabled.
+
+config APP_WIFI_MAX_RETRIES
+    int "Wi-Fi max reconnect retries"
+    range 1 100
+    default 8
+    help
+        Number of reconnect attempts after disconnect.
+
+config APP_WIFI_DISABLE_POWER_SAVE
+    bool "Disable Wi-Fi power save (WIFI_PS_NONE)"
+    default y
+    help
+        Forces Wi-Fi modem power-save off on the hosted C6 via esp_wifi_set_ps(WIFI_PS_NONE).
+        Recommended for maximum websocket stability.
+
+endmenu
+
+menu "ESP-Hosted"
+
+config APP_HOSTED_AUTO_UPDATE_C6_FW
+    bool "Auto-update C6 firmware on version mismatch"
+    default y
+    depends on ESP_HOSTED_ENABLED
+    help
+        If enabled, the host runs automatic C6 slave OTA using the bundled
+        firmware image whenever running C6 firmware differs from host version,
+        including 0.0.0/unknown coprocessor firmware recovery.
+
+endmenu
+
+menu "Home Assistant"
+
+config APP_HA_WS_URL
+    string "HA WebSocket URL"
+    default "YOUR_HA_WS_URL"
+    help
+        Example: wss://homeassistant.local:8123/api/websocket
+
+config APP_HA_ACCESS_TOKEN
+    string "HA Long-lived Access Token"
+    default "YOUR_HA_ACCESS_TOKEN"
+    help
+        Long-lived access token used for Home Assistant authentication.
+
+config APP_HA_FETCH_INITIAL_STATES
+    bool "Fetch initial states after auth_ok"
+    default y
+    help
+        When enabled, the device sends Home Assistant get_states right after
+        websocket authentication. This can be memory-intensive on constrained
+        links; keep disabled for maximum runtime stability.
+
+config APP_HA_SUBSCRIBE_STATE_CHANGED
+    bool "Subscribe to HA state_changed event stream"
+    default y
+    help
+        Enables global Home Assistant state_changed subscription.
+        This can produce high event volume; keep disabled while focusing
+        on transport stability, then enable once stable.
+
+config APP_HA_PING_INTERVAL_MS
+    int "HA ping interval (ms)"
+    range 5000 120000
+    default 8000
+    help
+        Periodic Home Assistant websocket "ping" message interval.
+        Keeps the application session active even during long idle periods.
+
+endmenu
+
+menu "Time"
+
+config APP_NTP_SERVER
+    string "NTP server"
+    default "pool.ntp.org"
+    help
+        NTP server used for time synchronization.
+
+config APP_TIME_TZ
+    string "Timezone (POSIX TZ)"
+    default "CET-1CEST,M3.5.0/2,M10.5.0/3"
+    help
+        POSIX timezone string used for localtime conversion.
+        Default is Europe/Berlin with automatic DST switching.
+
+endmenu
+
+endmenu

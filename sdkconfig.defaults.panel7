@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: LicenseRef-FNCL-1.1
+# Copyright (c) 2026 Cpt_Kirk
+#
+# Panel variant overlay: 7" 1024x600 (Waveshare ESP32-P4-WIFI6-Touch-LCD-7B).
+# Apply together with the common sdkconfig.defaults via
+#   idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.panel7" ...
+# or the CMake preset "panel7" (see CMakePresets.json).
+CONFIG_APP_PANEL_VARIANT_7INCH_1024=y
+# CONFIG_APP_PANEL_VARIANT_4INCH_720 is not set
+
+# --- BSP display/touch: Waveshare ESP32-P4-WIFI6-Touch-LCD-7B (1024x600 MIPI-DSI EK79007 + GT911) ---
+# RGB565 is the 7B BSP default; the DPI frame-buffer count is inherited from
+# the common sdkconfig.defaults (CONFIG_BSP_LCD_DPI_BUFFER_NUMS=2).
+CONFIG_ESP_LCD_TOUCH_MAX_POINTS=5
+CONFIG_LV_USE_LODEPNG=y
+
+# --- P4 silicon revision ---
+# This Waveshare 7B board carries ESP32-P4 revision v1.x (< 3.0) silicon.
+# rev <3.0 and rev >=3.0 are mutually exclusive and NOT boot-compatible,
+# so we must target the old silicon (rev v1.0 minimum) or the ROM
+# bootloader/second-stage will refuse to boot this image.
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y

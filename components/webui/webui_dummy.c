@@ -1,0 +1,9 @@
+/* SPDX-License-Identifier: LicenseRef-FNCL-1.1
+ * Copyright (c) 2026 Cpt_Kirk
+ */
+#include <stdint.h>
+
+uint8_t webui_component_anchor(void)
+{
+    return 0;
+}
