@@ -14,6 +14,21 @@ A runtime-configurable Home Assistant wall panel for ESP32-P4 and ESP32-S3 touch
   <img width="32%" alt="Media Player & Roborock" src="https://github.com/user-attachments/assets/c31df7b8-f7e7-461a-98af-80070eac0392" />
   <img width="32%" alt="Widget inspector" src="https://github.com/user-attachments/assets/97be77c3-0716-4641-994c-efe90c929953" />
 </p>
+
+## Screenshots / Zrzuty ekranu (panel 7B)
+
+<div align="center">
+  <a href="images/g1.jpg"><img src="images/g1.jpg" alt="BETTA 7B panel - screenshot 1" width="30%" /></a>
+  <a href="images/g2.jpg"><img src="images/g2.jpg" alt="BETTA 7B panel - screenshot 2" width="30%" /></a>
+  <a href="images/g3.jpg"><img src="images/g3.jpg" alt="BETTA 7B panel - screenshot 3" width="30%" /></a>
+  <a href="images/g4.jpg"><img src="images/g4.jpg" alt="BETTA 7B panel - screenshot 4" width="30%" /></a>
+  <a href="images/g5.jpg"><img src="images/g5.jpg" alt="BETTA 7B panel - screenshot 5" width="30%" /></a>
+  <a href="images/g6.jpg"><img src="images/g6.jpg" alt="BETTA 7B panel - screenshot 6" width="30%" /></a>
+  <a href="images/g7.jpg"><img src="images/g7.jpg" alt="BETTA 7B panel - screenshot 7" width="30%" /></a>
+</div>
+
+Kliknij obraz, aby powiększyć / Click an image to enlarge.
+
 ---
 
 ## Supported hardware
