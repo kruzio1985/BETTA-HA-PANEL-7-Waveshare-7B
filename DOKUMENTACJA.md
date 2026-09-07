@@ -27,7 +27,7 @@ Nasz firmware **nie jest projektem napisanym od zera** — jest zbudowany na otw
   web log monitor, screen power" (+ nasze późniejsze poprawki stabilności opisane w rozdziale 7)
 
 Zgodnie z licencją FNCL-1.1 zachowujemy oryginalny plik [LICENSE](LICENSE), oryginalny
-[README.md](README.md) oraz oznaczenie autorstwa we wszystkich plikach źródłowych
+[README.UPSTREAM.md](README.UPSTREAM.md) oraz oznaczenie autorstwa we wszystkich plikach źródłowych
 (nagłówki `Copyright (c) 2026 Cpt_Kirk` + SPDX).
 
 ### Co jest oryginałem, a co naszym dodatkiem
@@ -244,7 +244,7 @@ This firmware is **built on top of** the open-source project:
   web log monitor, screen power" (+ later stability fixes, see section 7)
 
 Per the FNCL-1.1 license we keep the original [LICENSE](LICENSE), the original
-[README.md](README.md) and the `Copyright (c) 2026 Cpt_Kirk` + SPDX headers in all source files.
+[README.UPSTREAM.md](README.UPSTREAM.md) and the `Copyright (c) 2026 Cpt_Kirk` + SPDX headers in all source files.
 
 ### Original vs. our additions
 
