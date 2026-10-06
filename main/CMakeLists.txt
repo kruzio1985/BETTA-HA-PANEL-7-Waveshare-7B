@@ -130,6 +130,7 @@ idf_component_register(
         "ui/widgets/w_scene_tile.c"
         "ui/widgets/w_person_tile.c"
         "ui/widgets/w_timer_tile.c"
+        "ui/widgets/w_sensor_tile.c"
         "ui/fonts/mdi_font_registry.c"
         "ui/theme/theme_default.c"
         "ui/theme/theme_palette.c"

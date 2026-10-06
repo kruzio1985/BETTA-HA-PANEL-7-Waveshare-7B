@@ -111,6 +111,10 @@ esp_err_t w_timer_tile_create(const ui_widget_def_t *def, lv_obj_t *parent, ui_w
 void w_timer_tile_apply_state(ui_widget_instance_t *instance, const ha_state_t *state);
 void w_timer_tile_mark_unavailable(ui_widget_instance_t *instance);
 
+esp_err_t w_sensor_tile_create(const ui_widget_def_t *def, lv_obj_t *parent, ui_widget_instance_t *out_instance);
+void w_sensor_tile_apply_state(ui_widget_instance_t *instance, const ha_state_t *state);
+void w_sensor_tile_mark_unavailable(ui_widget_instance_t *instance);
+
 static void widget_tile_style_from_instance(const ui_widget_instance_t *instance, ui_tile_style_t *out)
 {
     out->bg_color = instance->tile_bg_color;
@@ -242,6 +246,7 @@ esp_err_t ui_widget_factory_create(const ui_widget_def_t *def, lv_obj_t *parent,
     out_instance->tile_radius = def->tile_radius;
     out_instance->tile_opacity = def->tile_opacity;
     out_instance->tile_shadow = def->tile_shadow;
+    snprintf(out_instance->extra_entity_ids, sizeof(out_instance->extra_entity_ids), "%s", def->extra_entity_ids);
     out_instance->ctx = NULL;
 
     if (strcmp(def->type, "sensor") == 0) {
@@ -280,6 +285,8 @@ esp_err_t ui_widget_factory_create(const ui_widget_def_t *def, lv_obj_t *parent,
         err = w_person_tile_create(def, parent, out_instance);
     } else if (strcmp(def->type, "timer_tile") == 0) {
         err = w_timer_tile_create(def, parent, out_instance);
+    } else if (strcmp(def->type, "sensor_tile") == 0) {
+        err = w_sensor_tile_create(def, parent, out_instance);
     } else {
         return ESP_ERR_NOT_SUPPORTED;
     }
@@ -366,6 +373,8 @@ void ui_widget_factory_apply_state(ui_widget_instance_t *instance, const ha_stat
         w_person_tile_apply_state(instance, state);
     } else if (strcmp(instance->type, "timer_tile") == 0) {
         w_timer_tile_apply_state(instance, state);
+    } else if (strcmp(instance->type, "sensor_tile") == 0) {
+        w_sensor_tile_apply_state(instance, state);
     }
     widget_refresh_tile_after_state(instance);
 }
@@ -425,6 +434,8 @@ void ui_widget_factory_mark_unavailable(ui_widget_instance_t *instance)
         w_person_tile_mark_unavailable(instance);
     } else if (strcmp(instance->type, "timer_tile") == 0) {
         w_timer_tile_mark_unavailable(instance);
+    } else if (strcmp(instance->type, "sensor_tile") == 0) {
+        w_sensor_tile_mark_unavailable(instance);
     }
     widget_refresh_tile_after_state(instance);
 }

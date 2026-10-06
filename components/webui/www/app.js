@@ -72,7 +72,7 @@ const SETUP_WIZARD_PENDING_STORAGE_KEY = "betta.setupWizard.pending";
 const SETUP_WIZARD_DISMISSED_STORAGE_KEY = "betta.setupWizard.dismissed";
 const OTA_RELEASE_REPO = "cptkirki/BETTA-HA-PANEL";
 /* Tiles that may stay without an entity; they bind one when it is set. */
-const ENTITY_OPTIONAL_WIDGET_TYPES = ["cover_tile", "scene_tile", "person_tile", "timer_tile"];
+const ENTITY_OPTIONAL_WIDGET_TYPES = ["cover_tile", "scene_tile", "person_tile", "timer_tile", "sensor_tile"];
 const ENTITY_PICKER_CONFIGS = {
   sensor: {
     domain: "sensor",
@@ -4066,6 +4066,10 @@ function widgetSizeLimits(type) {
       return compact
         ? { minW: 110, minH: 90, maxW: 480, maxH: 480 }
         : { minW: 140, minH: 110, maxW: 480, maxH: 480 };
+    case "sensor_tile":
+      return compact
+        ? { minW: 100, minH: 100, maxW: CANVAS_WIDTH, maxH: CANVAS_HEIGHT }
+        : { minW: 100, minH: 100, maxW: CANVAS_WIDTH, maxH: CANVAS_HEIGHT };
     default:
       return fallback;
   }
@@ -4348,6 +4352,8 @@ const el = {
   fClockShowDate: document.getElementById("fClockShowDate"),
   sensorOptions: document.getElementById("sensorOptions"),
   fSensorValueColor: document.getElementById("fSensorValueColor"),
+  sensorTileOptions: document.getElementById("sensorTileOptions"),
+  fSensorTileEntityIds: document.getElementById("fSensorTileEntityIds"),
   tileLookGroup: document.getElementById("tileLookGroup"),
   fTilePreset: document.getElementById("fTilePreset"),
   fTileBgColor: document.getElementById("fTileBgColor"),
@@ -5693,6 +5699,37 @@ function bindPageLookInputs() {
       setStatus(t("layout.page_look.reset_done"));
     });
   }
+}
+
+function normalizeSensorTileEntityIds(value) {
+  return String(value || "")
+    .split(/[\n,]+/)
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .join(", ");
+}
+
+function sensorTilePreviewState(widget) {
+  const rows = normalizeSensorTileEntityIds(widget.entity_ids).split(", ").filter(Boolean);
+  let entityCount = 0;
+  let firstState = "";
+  for (const row of rows) {
+    if (!row || row.startsWith("##")) continue;
+    const eq = row.indexOf("=");
+    const raw = eq >= 0 ? row.slice(eq + 1).trim() : "";
+    if (!raw || raw.startsWith(":legend")) continue;
+    const entity = raw.replace(/:[a-z0-9_]+$/i, "");
+    if (!entity.includes(".")) continue;
+    entityCount++;
+    if (!firstState) {
+      const state = editor.states.get(entity);
+      if (state && state !== "unavailable" && state !== "unknown") {
+        firstState = state;
+      }
+    }
+  }
+  if (firstState) return firstState;
+  return entityCount > 0 ? `${entityCount} encji` : "brak encji";
 }
 
 function normalizeLayoutWidgets(layout) {
@@ -10659,6 +10696,7 @@ function allowedEntityDomainsForWidgetType(
 ) {
   if (type === "empty_tile") return [];
   if (type === "clock_alarm") return [];
+  if (type === "sensor_tile") return [];
   if (type === "sensor" || type === "graph") return ["sensor"];
   if (type === "binary_sensor") return ["binary_sensor"];
   if (type === "presence") return ["device_tracker", "person"];
@@ -10773,6 +10811,7 @@ function listEntitiesForWidgetType(
 ) {
   if (type === "empty_tile") return [];
   if (type === "clock_alarm") return [];
+  if (type === "sensor_tile") return [];
   return editor.entities.filter((entity) => entityMatchesWidgetType(entity, type, sliderDomain, buttonMode));
 }
 
@@ -11510,7 +11549,7 @@ function renderEntityOptions() {
     el.fSecondaryEntity.value = "";
   }
 
-  const primaryEnabled = inspectorType !== "empty_tile" && inspectorType !== "clock_alarm";
+  const primaryEnabled = inspectorType !== "empty_tile" && inspectorType !== "clock_alarm" && inspectorType !== "sensor_tile";
   if (el.fEntityWrap) {
     el.fEntityWrap.classList.toggle("hidden", !primaryEnabled);
   }
@@ -12377,6 +12416,7 @@ function renderCanvas() {
     const isPresence = widget.type === "presence";
     const isClockAlarmTile = widget.type === "clock_alarm";
     const isTimerTile = widget.type === "timer_tile";
+    const isSensorTile = widget.type === "sensor_tile";
     const isMediaPlayerButton = widget.type === "button" && String(widget.entity_id || "").startsWith("media_player.");
     let previewTitle = (isMediaPlayerButton && !String(widget.title || "").trim()) ? "" : (widget.title || widget.id);
     if (isBinarySensor && !normalizeBoolDefaultTrue(widget.binary_show_title)) {
@@ -12391,7 +12431,9 @@ function renderCanvas() {
         ? clockPreviewState()
         : (isTimerTile && !String(widget.entity_id || "").trim())
           ? "timer"
-          : (editor.states.get(widget.entity_id) || "unavailable");
+          : isSensorTile
+            ? sensorTilePreviewState(widget)
+            : (editor.states.get(widget.entity_id) || "unavailable");
     let previewStateColor = "";
     if (isBinarySensor) {
       const rawState = editor.states.get(widget.entity_id);
@@ -12544,6 +12586,12 @@ function renderInspector() {
     if (el.fSensorValueColor) {
       el.fSensorValueColor.value = "";
     }
+    if (el.sensorTileOptions) {
+      el.sensorTileOptions.classList.add("hidden");
+    }
+    if (el.fSensorTileEntityIds) {
+      el.fSensorTileEntityIds.value = "";
+    }
     if (el.clockOptions) {
       el.clockOptions.classList.add("hidden");
     }
@@ -12569,6 +12617,7 @@ function renderInspector() {
   const isAlarm = widget.type === "alarm_tile";
   const isClockAlarm = widget.type === "clock_alarm";
   const isSensor = widget.type === "sensor";
+  const isSensorTile = widget.type === "sensor_tile";
   if (el.buttonOptions) {
     el.buttonOptions.classList.toggle("hidden", !isButton);
   }
@@ -12592,6 +12641,12 @@ function renderInspector() {
   }
   if (el.sensorOptions) {
     el.sensorOptions.classList.toggle("hidden", !isSensor);
+  }
+  if (el.sensorTileOptions) {
+    el.sensorTileOptions.classList.toggle("hidden", !isSensorTile);
+  }
+  if (isSensorTile && el.fSensorTileEntityIds) {
+    el.fSensorTileEntityIds.value = widget.entity_ids || "";
   }
   if (isButton) {
     const accent = normalizeHexColor(widget.button_accent_color, DEFAULT_BUTTON_ACCENT_COLOR);
@@ -13098,6 +13153,7 @@ function addWidget(type, options = {}) {
       : type === "heating_tile" ? 150
       : (type === "cover" || type === "lock" || type === "fan" || type === "number") ? 160
       : type === "select" ? 200
+      : type === "sensor_tile" ? 220
       : 180
     : type === "weather_3day" ? 360
       : type === "todo_list" ? 360
@@ -13112,6 +13168,7 @@ function addWidget(type, options = {}) {
       : (type === "light_tile" || type === "heating_tile" || type === "weather_tile" || type === "empty_tile") ? 300
       : (type === "cover" || type === "lock" || type === "fan" || type === "number") ? 220
       : type === "select" ? 260
+      : type === "sensor_tile" ? 300
       : 220;
   const defaultH = compact
     ? type === "weather_3day" ? 240
@@ -13129,6 +13186,7 @@ function addWidget(type, options = {}) {
       : type === "heating_tile" ? 150
       : (type === "cover" || type === "lock" || type === "fan" || type === "number") ? 130
       : type === "select" ? 110
+      : type === "sensor_tile" ? 180
       : 110
     : type === "weather_3day" ? 260
       : type === "todo_list" ? 360
@@ -13143,6 +13201,7 @@ function addWidget(type, options = {}) {
       : (type === "light_tile" || type === "heating_tile" || type === "weather_tile" || type === "empty_tile") ? 260
       : (type === "cover" || type === "lock" || type === "fan" || type === "number") ? 150
       : type === "select" ? 140
+      : type === "sensor_tile" ? 200
       : 120;
   const rect = clampRectToCanvas({ x: 20, y: 20, w: defaultW, h: defaultH }, type);
 
@@ -13188,6 +13247,12 @@ function addWidget(type, options = {}) {
   if (type === "clock_alarm") {
     widget.clock_show_seconds = false;
     widget.clock_show_date = true;
+  }
+
+  if (type === "sensor_tile") {
+    widget.entity_id = "";
+    widget.secondary_entity_id = "";
+    widget.entity_ids = "";
   }
 
   page.widgets.push(widget);
@@ -13386,6 +13451,14 @@ function applyInspector(options = {}) {
     widget.sensor_value_color = normalizeHexColor(el.fSensorValueColor?.value, "");
   } else {
     delete widget.sensor_value_color;
+  }
+  if (widgetType === "sensor_tile") {
+    const sensorTileIds = normalizeSensorTileEntityIds(el.fSensorTileEntityIds?.value);
+    if (sensorTileIds) {
+      widget.entity_ids = sensorTileIds;
+    } else {
+      delete widget.entity_ids;
+    }
   }
   applyTileLookFromInspector(widget);
   widget.rect = clampRectToCanvas(

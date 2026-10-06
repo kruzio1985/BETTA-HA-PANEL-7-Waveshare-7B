@@ -415,6 +415,15 @@
 #define APP_MAX_PAGE_ID_LEN 32
 #define APP_MAX_STATE_LEN 64
 #define APP_MAX_NAME_LEN 64
+
+/* Comma-separated list of additional entity ids for composite widgets
+ * (sensor_tile rows).  Sized generously so a full sensor list fits. */
+#define APP_MAX_EXTRA_ENTITY_IDS_LEN 1536
+
+/* sensor_tile: labeled rows with optional entities ("Label=sensor.xyz").
+ * Rows with an empty entity are hidden. */
+#define APP_MAX_SENSOR_TILE_ROWS 24
+#define APP_MAX_SENSOR_TILE_LABEL_LEN 32
 #define APP_MAX_UNIT_LEN 24
 #define APP_MAX_ICON_LEN 64
 #define APP_MAX_UI_OPTION_LEN 24

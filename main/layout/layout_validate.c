@@ -89,6 +89,173 @@ static bool entity_in_domain(const char *entity_id, const char *domain)
     return strncmp(entity_id, domain, domain_len) == 0 && entity_id[domain_len] == '.';
 }
 
+static char s_labeled_list_reason[96];
+
+/* sensor_tile rows: "Label=entity.id,Label2=entity2.id". Every row needs a
+ * non-empty label and an optional entity id; an empty entity hides the row,
+ * and a label prefixed with "##" is a section header (empty entity). A
+ * ":legend:<scale>" entity is a colour legend row. On failure sets *reason. */
+static bool is_valid_labeled_entity_list(const char *list, size_t max_rows, const char **reason)
+{
+    if (reason != NULL) {
+        *reason = NULL;
+    }
+    if (list == NULL || list[0] == '\0') {
+        return true;
+    }
+
+    size_t count = 0;
+    const char *cursor = list;
+    while (*cursor != '\0') {
+        while (*cursor == ' ' || *cursor == ',' || *cursor == '\t' || *cursor == '\n' || *cursor == '\r') {
+            cursor++;
+        }
+        if (*cursor == '\0') {
+            break;
+        }
+        const char *start = cursor;
+        while (*cursor != '\0' && *cursor != ',') {
+            cursor++;
+        }
+        const char *end = cursor;
+        while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\n' || end[-1] == '\r')) {
+            end--;
+        }
+
+        const char *eq = start;
+        while (eq < end && *eq != '=') {
+            eq++;
+        }
+        if (eq == end || eq == start) {
+            if (reason != NULL) {
+                snprintf(s_labeled_list_reason, sizeof(s_labeled_list_reason),
+                    "row %d must be 'Label=entity'", (int)count + 1);
+                *reason = s_labeled_list_reason;
+            }
+            return false;
+        }
+
+        const char *label_start = start;
+        const char *label_end = eq;
+        while (label_start < label_end &&
+               (*label_start == ' ' || *label_start == '\t' || *label_start == '\n' || *label_start == '\r')) {
+            label_start++;
+        }
+        while (label_end > label_start &&
+               (label_end[-1] == ' ' || label_end[-1] == '\t' || label_end[-1] == '\n' || label_end[-1] == '\r')) {
+            label_end--;
+        }
+        size_t label_len = (size_t)(label_end - label_start);
+        if (label_len == 0 || label_len >= APP_MAX_SENSOR_TILE_LABEL_LEN) {
+            if (reason != NULL) {
+                snprintf(s_labeled_list_reason, sizeof(s_labeled_list_reason),
+                    "label length must be 1-%d characters (row %d)",
+                    APP_MAX_SENSOR_TILE_LABEL_LEN - 1, (int)count + 1);
+                *reason = s_labeled_list_reason;
+            }
+            return false;
+        }
+
+        const char *entity_start = eq + 1;
+        const char *entity_end = end;
+        while (entity_start < entity_end &&
+               (*entity_start == ' ' || *entity_start == '\t' || *entity_start == '\n' || *entity_start == '\r')) {
+            entity_start++;
+        }
+        while (entity_end > entity_start &&
+               (entity_end[-1] == ' ' || entity_end[-1] == '\t' || entity_end[-1] == '\n' || entity_end[-1] == '\r')) {
+            entity_end--;
+        }
+        size_t entity_len = (size_t)(entity_end - entity_start);
+        if (entity_len > 0) {
+            char entity[APP_MAX_ENTITY_ID_LEN + 8];
+            if (entity_len >= sizeof(entity)) {
+                if (reason != NULL) {
+                    snprintf(s_labeled_list_reason, sizeof(s_labeled_list_reason),
+                        "entity id too long in row %d", (int)count + 1);
+                    *reason = s_labeled_list_reason;
+                }
+                return false;
+            }
+            memcpy(entity, entity_start, entity_len);
+            entity[entity_len] = '\0';
+
+            /* A legend row contributes no entity. */
+            if (strncmp(entity, ":legend:", 8) == 0) {
+                count++;
+                continue;
+            }
+
+            /* Strip a per-row style suffix: ":bar", ":dot", ":status",
+             * ":chart", ":ports", ":ip", ":power[:color]", and the air-quality
+             * scales ":aqi", ":pm", ":pm10", ":co2", ":tvoc", ":ch2o", ":co",
+             * ":level". */
+            size_t slen = strlen(entity);
+            bool stripped = true;
+            while (stripped) {
+                stripped = false;
+                slen = strlen(entity);
+                if (slen >= 7 && strcmp(entity + slen - 7, ":status") == 0) {
+                    entity[slen - 7] = '\0'; stripped = true;
+                } else if (slen >= 6 && strcmp(entity + slen - 6, ":chart") == 0) {
+                    entity[slen - 6] = '\0'; stripped = true;
+                } else if (slen >= 6 && strcmp(entity + slen - 6, ":ports") == 0) {
+                    entity[slen - 6] = '\0'; stripped = true;
+                } else if (slen >= 6 && strcmp(entity + slen - 6, ":level") == 0) {
+                    entity[slen - 6] = '\0'; stripped = true;
+                } else if (slen >= 5 && strcmp(entity + slen - 5, ":pm10") == 0) {
+                    entity[slen - 5] = '\0'; stripped = true;
+                } else if (slen >= 5 && strcmp(entity + slen - 5, ":tvoc") == 0) {
+                    entity[slen - 5] = '\0'; stripped = true;
+                } else if (slen >= 5 && strcmp(entity + slen - 5, ":ch2o") == 0) {
+                    entity[slen - 5] = '\0'; stripped = true;
+                } else if (slen >= 4 && strcmp(entity + slen - 4, ":bar") == 0) {
+                    entity[slen - 4] = '\0'; stripped = true;
+                } else if (slen >= 4 && strcmp(entity + slen - 4, ":dot") == 0) {
+                    entity[slen - 4] = '\0'; stripped = true;
+                } else if (slen >= 4 && strcmp(entity + slen - 4, ":aqi") == 0) {
+                    entity[slen - 4] = '\0'; stripped = true;
+                } else if (slen >= 4 && strcmp(entity + slen - 4, ":co2") == 0) {
+                    entity[slen - 4] = '\0'; stripped = true;
+                } else if (slen >= 3 && strcmp(entity + slen - 3, ":ip") == 0) {
+                    entity[slen - 3] = '\0'; stripped = true;
+                } else if (slen >= 3 && strcmp(entity + slen - 3, ":pm") == 0) {
+                    entity[slen - 3] = '\0'; stripped = true;
+                } else if (slen >= 3 && strcmp(entity + slen - 3, ":co") == 0) {
+                    entity[slen - 3] = '\0'; stripped = true;
+                } else {
+                    char *p = strstr(entity, ":power");
+                    if (p != NULL && (p[6] == '\0' || p[6] == ':' || p[6] == '#')) {
+                        *p = '\0';
+                        stripped = true;
+                    }
+                }
+            }
+
+            if (entity[0] != '\0' && !is_valid_entity_id(entity)) {
+                if (reason != NULL) {
+                    snprintf(s_labeled_list_reason, sizeof(s_labeled_list_reason),
+                        "invalid entity id in row %d", (int)count + 1);
+                    *reason = s_labeled_list_reason;
+                }
+                return false;
+            }
+        }
+
+        count++;
+        if (count > max_rows) {
+            if (reason != NULL) {
+                snprintf(s_labeled_list_reason, sizeof(s_labeled_list_reason),
+                    "too many rows (max %d)", (int)max_rows);
+                *reason = s_labeled_list_reason;
+            }
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static bool is_supported_widget_type(const char *type)
 {
     if (type == NULL) {
@@ -104,7 +271,8 @@ static bool is_supported_widget_type(const char *type)
            (strcmp(type, "cover") == 0) || (strcmp(type, "cover_tile") == 0) ||
            (strcmp(type, "scene_tile") == 0) || (strcmp(type, "person_tile") == 0) ||
            (strcmp(type, "timer_tile") == 0) || (strcmp(type, "lock") == 0) ||
-           (strcmp(type, "fan") == 0) || (strcmp(type, "select") == 0) || (strcmp(type, "number") == 0);
+           (strcmp(type, "fan") == 0) || (strcmp(type, "select") == 0) || (strcmp(type, "number") == 0) ||
+           (strcmp(type, "sensor_tile") == 0);
 }
 
 static bool is_supported_page_type(const char *type)
@@ -358,6 +526,15 @@ static widget_size_limits_t widget_size_limits_for_type(const char *type)
 #endif
         limits.max_w = 480;
         limits.max_h = 480;
+    } else if (strcmp(type, "sensor_tile") == 0) {
+        /* Labeled multi-row list: needs room for a title plus several rows. */
+#if defined(CONFIG_APP_PANEL_VARIANT_S3_480)
+        limits.min_w = 120;
+        limits.min_h = 100;
+#else
+        limits.min_w = 120;
+        limits.min_h = 100;
+#endif
     }
 
     if (limits.max_w > APP_CONTENT_BOX_WIDTH) {
@@ -488,6 +665,10 @@ static bool widget_entity_domain_valid(const char *type, const char *entity_id)
         /* The clock tile has no entity of its own. */
         return true;
     }
+    if (strcmp(type, "sensor_tile") == 0) {
+        /* Its entities live in the comma-separated "entity_ids" list. */
+        return true;
+    }
     if (widget_entity_id_optional(type) && entity_id[0] == '\0') {
         return true;
     }
@@ -501,7 +682,8 @@ static bool widget_entity_domain_valid(const char *type, const char *entity_id)
 
 static bool widget_requires_primary_entity(const char *type)
 {
-    return type == NULL || (strcmp(type, "empty_tile") != 0 && strcmp(type, "clock_alarm") != 0);
+    return type == NULL || (strcmp(type, "empty_tile") != 0 && strcmp(type, "clock_alarm") != 0 &&
+                            strcmp(type, "sensor_tile") != 0);
 }
 
 static bool is_hex_digit_char(char c)
@@ -993,7 +1175,7 @@ static void validate_page_style(cJSON *page, const char *page_id, layout_validat
 static bool validate_widget(cJSON *widget, const char *known_widget_ids, size_t known_ids_len,
     size_t page_index, size_t widget_index, layout_validation_result_t *result)
 {
-    char msg[96];
+    char msg[160];
 
     cJSON *id = cJSON_GetObjectItemCaseSensitive(widget, "id");
     cJSON *type = cJSON_GetObjectItemCaseSensitive(widget, "type");
@@ -1108,6 +1290,39 @@ static bool validate_widget(cJSON *widget, const char *known_widget_ids, size_t 
                 !entity_in_domain(secondary_entity_id->valuestring, "image")) {
                 snprintf(msg, sizeof(msg), "widget %s: secondary_entity_id must be image.*",
                     cJSON_IsString(id) ? id->valuestring : "?");
+                layout_validation_add(result, msg);
+            }
+        }
+    }
+
+    if (cJSON_IsString(type) && type->valuestring != NULL && strcmp(type->valuestring, "sensor_tile") == 0) {
+        cJSON *entity_ids = cJSON_GetObjectItemCaseSensitive(widget, "entity_ids");
+        if (entity_ids != NULL && !cJSON_IsString(entity_ids)) {
+            snprintf(msg, sizeof(msg),
+                "widget %s: entity_ids must list up to %d 'Label=entity' pairs (empty entity hides a row)",
+                cJSON_IsString(id) ? id->valuestring : "?", APP_MAX_SENSOR_TILE_ROWS);
+            layout_validation_add(result, msg);
+        } else if (entity_ids != NULL && entity_ids->valuestring != NULL) {
+            const char *reason = NULL;
+            if (!is_valid_labeled_entity_list(entity_ids->valuestring, APP_MAX_SENSOR_TILE_ROWS, &reason)) {
+                snprintf(msg, sizeof(msg),
+                    "widget %s: entity_ids: %s",
+                    cJSON_IsString(id) ? id->valuestring : "?",
+                    reason != NULL ? reason : "must list up to 24 'Label=entity' pairs");
+                layout_validation_add(result, msg);
+            }
+        }
+
+        static const char *const font_keys[] = {
+            "sensor_tile_title_font_px", "sensor_tile_row_font_px",
+            "sensor_tile_ip_font_px", "sensor_tile_power_font_px",
+            "sensor_tile_ports_font_px",
+        };
+        for (size_t k = 0; k < sizeof(font_keys) / sizeof(font_keys[0]); k++) {
+            cJSON *font_px = cJSON_GetObjectItemCaseSensitive(widget, font_keys[k]);
+            if (font_px != NULL && (!cJSON_IsNumber(font_px) || font_px->valueint < 0 || font_px->valueint > 64)) {
+                snprintf(msg, sizeof(msg), "widget %s: %s must be a number from 0 to 64 (0 = auto)",
+                    cJSON_IsString(id) ? id->valuestring : "?", font_keys[k]);
                 layout_validation_add(result, msg);
             }
         }

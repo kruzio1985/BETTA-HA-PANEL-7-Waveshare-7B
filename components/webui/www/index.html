@@ -356,6 +356,7 @@
                     <option value="number">number</option>
                     <option value="alarm_tile">alarm_tile</option>
                     <option value="clock_alarm">clock_alarm</option>
+                    <option value="sensor_tile">sensor_tile</option>
                   </select>
                   <label id="fEntityWrap"><span id="fEntityLabel">Entity</span>
                     <input id="fEntity" type="text" list="entityOptions" />
@@ -540,6 +541,11 @@
                   <div id="sensorOptions" class="slider-options hidden">
                     <label><span id="fSensorValueColorLabel">Value color (empty = auto)</span>
                       <input id="fSensorValueColor" type="text" placeholder="#RRGGBB (auto)" />
+                    </label>
+                  </div>
+                  <div id="sensorTileOptions" class="slider-options hidden">
+                    <label><span id="fSensorTileEntityIdsLabel">Encje (etykieta=encja, oddziel przecinkiem; ## Nagłówek=, Etykieta=:legend:skala)</span>
+                      <textarea id="fSensorTileEntityIds" rows="10" placeholder="Temperatura=sensor.temp,Wilgotność=sensor.humid"></textarea>
                     </label>
                   </div>
                   <div id="inspectorStyleEmpty" class="meta hidden" data-i18n-key="inspector.style.empty">No style options for this widget.</div>

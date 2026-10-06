@@ -3947,6 +3947,135 @@ static void ha_client_collect_entity_id(
     (*count)++;
 }
 
+/* Extract the entity part of one comma-list token. Supports a plain entity id
+ * ("sensor.cpu_temp") and a labeled pair ("GPU=sensor.gpu_temp"), stripping a
+ * trailing style suffix (":bar", ":dot", ":status", ":chart", ":ports",
+ * ":ip", ":power[:color]", ":aqi", ":pm", ":pm10", ":co2", ":tvoc", ":ch2o",
+ * ":co", ":level"). Returns false when the token has no usable entity part
+ * (including legend tokens like ":legend:pm"). */
+static bool ha_client_token_entity(const char *start, const char *end, char *out, size_t out_len)
+{
+    if (start == NULL || end == NULL || out == NULL || out_len == 0) {
+        return false;
+    }
+    while (start < end && (*start == ' ' || *start == '\t' || *start == '\n' || *start == '\r')) {
+        start++;
+    }
+    while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\n' || end[-1] == '\r')) {
+        end--;
+    }
+
+    const char *eq = start;
+    while (eq < end && *eq != '=') {
+        eq++;
+    }
+    if (eq < end) {
+        start = eq + 1;
+        while (start < end && (*start == ' ' || *start == '\t' || *start == '\n' || *start == '\r')) {
+            start++;
+        }
+        while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\n' || end[-1] == '\r')) {
+            end--;
+        }
+    }
+
+    size_t elen = (size_t)(end - start);
+    if (elen >= 4 && strncmp(end - 4, ":bar", 4) == 0) {
+        end -= 4;
+    } else if (elen >= 4 && strncmp(end - 4, ":dot", 4) == 0) {
+        end -= 4;
+    } else if (elen >= 7 && strncmp(end - 7, ":status", 7) == 0) {
+        end -= 7;
+    } else if (elen >= 6 && strncmp(end - 6, ":chart", 6) == 0) {
+        end -= 6;
+    } else if (elen >= 6 && strncmp(end - 6, ":ports", 6) == 0) {
+        end -= 6;
+    } else if (elen >= 3 && strncmp(end - 3, ":ip", 3) == 0) {
+        end -= 3;
+    } else {
+        const char *p = start;
+        while (p + 6 <= end) {
+            if (strncmp(p, ":power", 6) == 0 &&
+                (p + 6 == end || p[6] == ':' || p[6] == '#')) {
+                end = p;
+                break;
+            }
+            p++;
+        }
+    }
+
+    elen = (size_t)(end - start);
+    if (elen >= 5 && strncmp(end - 5, ":pm10", 5) == 0) {
+        end -= 5;
+    } else if (elen >= 5 && strncmp(end - 5, ":tvoc", 5) == 0) {
+        end -= 5;
+    } else if (elen >= 5 && strncmp(end - 5, ":ch2o", 5) == 0) {
+        end -= 5;
+    } else if (elen >= 6 && strncmp(end - 6, ":level", 6) == 0) {
+        end -= 6;
+    } else if (elen >= 4 && strncmp(end - 4, ":aqi", 4) == 0) {
+        end -= 4;
+    } else if (elen >= 4 && strncmp(end - 4, ":co2", 4) == 0) {
+        end -= 4;
+    } else if (elen >= 3 && strncmp(end - 3, ":pm", 3) == 0) {
+        end -= 3;
+    } else if (elen >= 3 && strncmp(end - 3, ":co", 3) == 0) {
+        end -= 3;
+    }
+
+    size_t len = (size_t)(end - start);
+    if (len == 0 || len >= out_len) {
+        return false;
+    }
+    if (memchr(start, '.', len) == NULL) {
+        return false;
+    }
+    memcpy(out, start, len);
+    out[len] = '\0';
+    return true;
+}
+
+/* Collect every entity id found in a comma separated list value. Labeled
+ * "Label=entity" pairs contribute only their entity part. */
+static void ha_client_collect_entity_list_ids(
+    cJSON *widget, const char *key, char *entity_ids, size_t *count, size_t max_count)
+{
+    if (widget == NULL || key == NULL || entity_ids == NULL || count == NULL || *count >= max_count) {
+        return;
+    }
+
+    cJSON *list_item = cJSON_GetObjectItemCaseSensitive(widget, key);
+    if (!cJSON_IsString(list_item) || list_item->valuestring == NULL || list_item->valuestring[0] == '\0') {
+        return;
+    }
+
+    const char *cursor = list_item->valuestring;
+    while (*cursor != '\0' && *count < max_count) {
+        while (*cursor == ' ' || *cursor == ',' || *cursor == '\t' || *cursor == '\n' || *cursor == '\r') {
+            cursor++;
+        }
+        if (*cursor == '\0') {
+            break;
+        }
+        const char *start = cursor;
+        while (*cursor != '\0' && *cursor != ',') {
+            cursor++;
+        }
+
+        char token_entity[APP_MAX_ENTITY_ID_LEN];
+        if (!ha_client_token_entity(start, cursor, token_entity, sizeof(token_entity))) {
+            continue;
+        }
+        if (ha_client_entity_id_in_list(entity_ids, *count, token_entity)) {
+            continue;
+        }
+
+        char *dst = entity_ids + (*count * APP_MAX_ENTITY_ID_LEN);
+        safe_copy_cstr(dst, APP_MAX_ENTITY_ID_LEN, token_entity);
+        (*count)++;
+    }
+}
+
 static size_t ha_client_collect_layout_entity_ids(char *entity_ids, size_t max_count, bool *out_need_weather_forecast)
 {
     if (entity_ids == NULL || max_count == 0) {
@@ -4046,6 +4175,8 @@ static size_t ha_client_collect_layout_entity_ids(char *entity_ids, size_t max_c
                 }
                 ha_client_collect_entity_id(widget, "entity_id", entity_ids, &count, max_count);
                 ha_client_collect_entity_id(widget, "secondary_entity_id", entity_ids, &count, max_count);
+                ha_client_collect_entity_list_ids(widget, "entity_ids", entity_ids, &count, max_count);
+                ha_client_collect_entity_list_ids(widget, "sub_entity_ids", entity_ids, &count, max_count);
             }
         }
     }

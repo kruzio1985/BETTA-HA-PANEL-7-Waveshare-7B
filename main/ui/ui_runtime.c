@@ -681,6 +681,124 @@ static uint32_t ui_runtime_hash_state(uint32_t h, const ha_state_t *state)
     return h;
 }
 
+/* Extract the entity id from a list token. Tokens may be a plain entity id
+ * ("sensor.cpu_temp") or a labeled pair ("GPU=sensor.gpu_temp"). A trailing
+ * per-row style suffix (":bar", ":dot", ":status", ":chart", ":ports",
+ * ":ip", ":power[:color]", ":aqi", ":pm", ":pm10", ":co2", ":tvoc", ":ch2o",
+ * ":co", ":level") is stripped. Returns false when the token has no usable
+ * entity part (including legend tokens like ":legend:pm"). */
+static bool ui_runtime_token_entity(const char *start, const char *end, char *out, size_t out_len)
+{
+    if (start == NULL || end == NULL || out == NULL || out_len == 0) {
+        return false;
+    }
+    while (start < end && (*start == ' ' || *start == '\t' || *start == '\n' || *start == '\r')) {
+        start++;
+    }
+    while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\n' || end[-1] == '\r')) {
+        end--;
+    }
+
+    const char *eq = start;
+    while (eq < end && *eq != '=') {
+        eq++;
+    }
+    if (eq < end) {
+        start = eq + 1;
+        while (start < end && (*start == ' ' || *start == '\t' || *start == '\n' || *start == '\r')) {
+            start++;
+        }
+        while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\n' || end[-1] == '\r')) {
+            end--;
+        }
+    }
+
+    size_t elen = (size_t)(end - start);
+    if (elen >= 4 && strncmp(end - 4, ":bar", 4) == 0) {
+        end -= 4;
+    } else if (elen >= 4 && strncmp(end - 4, ":dot", 4) == 0) {
+        end -= 4;
+    } else if (elen >= 7 && strncmp(end - 7, ":status", 7) == 0) {
+        end -= 7;
+    } else if (elen >= 6 && strncmp(end - 6, ":chart", 6) == 0) {
+        end -= 6;
+    } else if (elen >= 6 && strncmp(end - 6, ":ports", 6) == 0) {
+        end -= 6;
+    } else if (elen >= 3 && strncmp(end - 3, ":ip", 3) == 0) {
+        end -= 3;
+    } else {
+        const char *p = start;
+        while (p + 6 <= end) {
+            if (strncmp(p, ":power", 6) == 0 &&
+                (p + 6 == end || p[6] == ':' || p[6] == '#')) {
+                end = p;
+                break;
+            }
+            p++;
+        }
+    }
+
+    /* Air-quality scale suffixes (":aqi", ":pm", ":pm10", ":co2", ":tvoc",
+     * ":ch2o", ":co", ":level"). Kept in sync with w_sensor_tile.c. */
+    elen = (size_t)(end - start);
+    if (elen >= 5 && strncmp(end - 5, ":pm10", 5) == 0) {
+        end -= 5;
+    } else if (elen >= 5 && strncmp(end - 5, ":tvoc", 5) == 0) {
+        end -= 5;
+    } else if (elen >= 5 && strncmp(end - 5, ":ch2o", 5) == 0) {
+        end -= 5;
+    } else if (elen >= 6 && strncmp(end - 6, ":level", 6) == 0) {
+        end -= 6;
+    } else if (elen >= 4 && strncmp(end - 4, ":aqi", 4) == 0) {
+        end -= 4;
+    } else if (elen >= 4 && strncmp(end - 4, ":co2", 4) == 0) {
+        end -= 4;
+    } else if (elen >= 3 && strncmp(end - 3, ":pm", 3) == 0) {
+        end -= 3;
+    } else if (elen >= 3 && strncmp(end - 3, ":co", 3) == 0) {
+        end -= 3;
+    }
+
+    size_t len = (size_t)(end - start);
+    if (len == 0 || len >= out_len) {
+        return false;
+    }
+    /* Entity ids always carry a "domain.name" dot; anything without one is a
+     * legend token (":legend:pm") or garbage, not an entity. */
+    if (memchr(start, '.', len) == NULL) {
+        return false;
+    }
+    memcpy(out, start, len);
+    out[len] = '\0';
+    return true;
+}
+
+static bool ui_runtime_entity_in_list(const char *list, const char *entity_id)
+{
+    if (list == NULL || list[0] == '\0' || entity_id == NULL || entity_id[0] == '\0') {
+        return false;
+    }
+    const char *cursor = list;
+    while (*cursor != '\0') {
+        while (*cursor == ' ' || *cursor == ',' || *cursor == '\t' || *cursor == '\n' || *cursor == '\r') {
+            cursor++;
+        }
+        if (*cursor == '\0') {
+            break;
+        }
+        const char *start = cursor;
+        while (*cursor != '\0' && *cursor != ',') {
+            cursor++;
+        }
+        char token_entity[APP_MAX_ENTITY_ID_LEN];
+        if (ui_runtime_token_entity(start, cursor, token_entity, sizeof(token_entity)) &&
+            strcmp(entity_id, token_entity) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static uint32_t ui_runtime_widget_state_signature(ui_widget_instance_t *widget,
                                                   bool *primary_found, bool *secondary_found)
 {
@@ -713,6 +831,33 @@ static uint32_t ui_runtime_widget_state_signature(ui_widget_instance_t *widget,
     } else {
         h ^= 0x9E3779B9u;
         h *= 16777619u;
+    }
+
+    if (widget->extra_entity_ids[0] != '\0') {
+        const char *cursor = widget->extra_entity_ids;
+        while (*cursor != '\0') {
+            while (*cursor == ' ' || *cursor == ',' || *cursor == '\t' || *cursor == '\n' || *cursor == '\r') {
+                cursor++;
+            }
+            if (*cursor == '\0') {
+                break;
+            }
+            char entity_id[APP_MAX_ENTITY_ID_LEN];
+            const char *start = cursor;
+            while (*cursor != '\0' && *cursor != ',') {
+                cursor++;
+            }
+            if (!ui_runtime_token_entity(start, cursor, entity_id, sizeof(entity_id))) {
+                continue;
+            }
+            memset(&s_state_scratch, 0, sizeof(s_state_scratch));
+            if (ha_model_get_state(entity_id, &s_state_scratch)) {
+                h = ui_runtime_hash_state(h, &s_state_scratch);
+            } else {
+                h ^= 0x5AB2E3EDu;
+                h *= 16777619u;
+            }
+        }
     }
 
     if (primary_found != NULL) {
@@ -763,6 +908,35 @@ static bool ui_runtime_sync_widget_state(ui_widget_instance_t *widget, bool allo
         }
     }
 
+    if (widget->extra_entity_ids[0] != '\0') {
+        const char *cursor = widget->extra_entity_ids;
+        while (*cursor != '\0') {
+            while (*cursor == ' ' || *cursor == ',' || *cursor == '\t' || *cursor == '\n' || *cursor == '\r') {
+                cursor++;
+            }
+            if (*cursor == '\0') {
+                break;
+            }
+            char entity_id[APP_MAX_ENTITY_ID_LEN];
+            const char *start = cursor;
+            while (*cursor != '\0' && *cursor != ',') {
+                cursor++;
+            }
+            if (!ui_runtime_token_entity(start, cursor, entity_id, sizeof(entity_id))) {
+                continue;
+            }
+            memset(&s_state_scratch, 0, sizeof(s_state_scratch));
+            if (ha_model_get_state(entity_id, &s_state_scratch)) {
+                ui_widget_factory_apply_state(widget, &s_state_scratch);
+            } else {
+                memset(&s_state_scratch, 0, sizeof(s_state_scratch));
+                snprintf(s_state_scratch.entity_id, sizeof(s_state_scratch.entity_id), "%s", entity_id);
+                snprintf(s_state_scratch.state, sizeof(s_state_scratch.state), "%s", "unavailable");
+                ui_widget_factory_apply_state(widget, &s_state_scratch);
+            }
+        }
+    }
+
     s_apply_painted_count++;
     return true;
 }
@@ -781,7 +955,8 @@ static void ui_runtime_apply_entity_state(const char *entity_id)
         bool is_primary = (strncmp(entity_id, s_widgets[i].entity_id, APP_MAX_ENTITY_ID_LEN) == 0);
         bool is_secondary = (s_widgets[i].secondary_entity_id[0] != '\0') &&
                             (strncmp(entity_id, s_widgets[i].secondary_entity_id, APP_MAX_ENTITY_ID_LEN) == 0);
-        if (!is_primary && !is_secondary) {
+        bool is_extra = ui_runtime_entity_in_list(s_widgets[i].extra_entity_ids, entity_id);
+        if (!is_primary && !is_secondary && !is_extra) {
             continue;
         }
         (void)ui_runtime_sync_widget_state(&s_widgets[i], is_primary);
@@ -904,6 +1079,14 @@ static bool ui_runtime_widget_from_json(cJSON *widget_json, ui_widget_def_t *out
     cJSON *clock_show_seconds = cJSON_GetObjectItemCaseSensitive(widget_json, "clock_show_seconds");
     cJSON *clock_show_date = cJSON_GetObjectItemCaseSensitive(widget_json, "clock_show_date");
     cJSON *sensor_value_color = cJSON_GetObjectItemCaseSensitive(widget_json, "sensor_value_color");
+    cJSON *sensor_tile_title_font_px = cJSON_GetObjectItemCaseSensitive(widget_json, "sensor_tile_title_font_px");
+    cJSON *sensor_tile_row_font_px = cJSON_GetObjectItemCaseSensitive(widget_json, "sensor_tile_row_font_px");
+    cJSON *sensor_tile_ip_font_px = cJSON_GetObjectItemCaseSensitive(widget_json, "sensor_tile_ip_font_px");
+    cJSON *sensor_tile_power_font_px = cJSON_GetObjectItemCaseSensitive(widget_json, "sensor_tile_power_font_px");
+    cJSON *sensor_tile_ports_font_px = cJSON_GetObjectItemCaseSensitive(widget_json, "sensor_tile_ports_font_px");
+    cJSON *extra_entity_ids = cJSON_GetObjectItemCaseSensitive(widget_json, "extra_entity_ids");
+    cJSON *sub_entity_ids = cJSON_GetObjectItemCaseSensitive(widget_json, "sub_entity_ids");
+    cJSON *list_entity_ids = cJSON_GetObjectItemCaseSensitive(widget_json, "entity_ids");
     cJSON *tile_border_width = cJSON_GetObjectItemCaseSensitive(widget_json, "tile_border_width");
     cJSON *tile_radius = cJSON_GetObjectItemCaseSensitive(widget_json, "tile_radius");
     cJSON *tile_opacity = cJSON_GetObjectItemCaseSensitive(widget_json, "tile_opacity");
@@ -914,7 +1097,8 @@ static bool ui_runtime_widget_from_json(cJSON *widget_json, ui_widget_def_t *out
     }
 
     const bool requires_entity = (strcmp(type->valuestring, "empty_tile") != 0) &&
-                                 (strcmp(type->valuestring, "clock_alarm") != 0);
+                                 (strcmp(type->valuestring, "clock_alarm") != 0) &&
+                                 (strcmp(type->valuestring, "sensor_tile") != 0);
     if (requires_entity && !cJSON_IsString(entity_id)) {
         return false;
     }
@@ -1037,6 +1221,37 @@ static bool ui_runtime_widget_from_json(cJSON *widget_json, ui_widget_def_t *out
     }
     if (cJSON_IsString(sensor_value_color) && sensor_value_color->valuestring != NULL) {
         snprintf(out->sensor_value_color, sizeof(out->sensor_value_color), "%s", sensor_value_color->valuestring);
+    }
+    if (cJSON_IsNumber(sensor_tile_title_font_px)) {
+        out->sensor_tile_title_font_px = sensor_tile_title_font_px->valueint;
+    }
+    if (cJSON_IsNumber(sensor_tile_row_font_px)) {
+        out->sensor_tile_row_font_px = sensor_tile_row_font_px->valueint;
+    }
+    if (cJSON_IsNumber(sensor_tile_ip_font_px)) {
+        out->sensor_tile_ip_font_px = sensor_tile_ip_font_px->valueint;
+    }
+    if (cJSON_IsNumber(sensor_tile_power_font_px)) {
+        out->sensor_tile_power_font_px = sensor_tile_power_font_px->valueint;
+    }
+    if (cJSON_IsNumber(sensor_tile_ports_font_px)) {
+        out->sensor_tile_ports_font_px = sensor_tile_ports_font_px->valueint;
+    }
+    {
+        const cJSON *extra_src = NULL;
+        if (cJSON_IsString(extra_entity_ids) && extra_entity_ids->valuestring != NULL &&
+            extra_entity_ids->valuestring[0] != '\0') {
+            extra_src = extra_entity_ids;
+        } else if (cJSON_IsString(sub_entity_ids) && sub_entity_ids->valuestring != NULL &&
+                   sub_entity_ids->valuestring[0] != '\0') {
+            extra_src = sub_entity_ids;
+        } else if (cJSON_IsString(list_entity_ids) && list_entity_ids->valuestring != NULL &&
+                   list_entity_ids->valuestring[0] != '\0') {
+            extra_src = list_entity_ids;
+        }
+        if (extra_src != NULL) {
+            snprintf(out->extra_entity_ids, sizeof(out->extra_entity_ids), "%s", extra_src->valuestring);
+        }
     }
     ui_runtime_copy_json_string(widget_json, "tile_bg_color", out->tile_bg_color, sizeof(out->tile_bg_color));
     ui_runtime_copy_json_string(widget_json, "tile_bg_grad_color", out->tile_bg_grad_color,

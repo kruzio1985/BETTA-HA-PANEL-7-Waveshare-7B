@@ -14,6 +14,15 @@ First public release of the fork: the Waveshare **ESP32-P4-WIFI6-Touch-LCD-7B** 
 first-class variant (`panel7` → project `betta-ha-panel-7b`, version `v0.8.2-7b`), together with
 two weeks of stabilisation work on display, audio, cameras and the dashboard editor.
 
+### New — `sensor_tile` multi-entity widget (2026-10-06)
+
+- Ported the **`sensor_tile`** widget from the sibling Guiton 10 project: one tile renders many
+  labelled entities with sections (`## Label=`), colour-scale legends (`:legend:<scale>`), value
+  thresholds (`:aqi`, `:pm`, `:pm10`, `:co2`, `:tvoc`, `:ch2o`, `:co`, `:level`) and per-row
+  colouring — used for the air-quality station dashboard.
+- The web editor now understands `sensor_tile`: the inspector shows an editable **Entities** list
+  (`label=entity_id`, comma-separated) and the canvas previews the first live value.
+
 ### Hardware and platform
 
 - New panel variant: 7" 1024×600 **MIPI-DSI** display (EK79007), **GT911** touch

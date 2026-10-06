@@ -59,10 +59,16 @@ typedef struct {
     int tile_radius;
     int tile_opacity;
     bool tile_shadow;
+    int sensor_tile_title_font_px;
+    int sensor_tile_row_font_px;
+    int sensor_tile_ip_font_px;
+    int sensor_tile_power_font_px;
+    int sensor_tile_ports_font_px;
     int x;
     int y;
     int w;
     int h;
+    char extra_entity_ids[APP_MAX_EXTRA_ENTITY_IDS_LEN];
 } ui_widget_def_t;
 
 typedef struct {
@@ -114,6 +120,7 @@ typedef struct {
     int tile_radius;
     int tile_opacity;
     bool tile_shadow;
+    char extra_entity_ids[APP_MAX_EXTRA_ENTITY_IDS_LEN];
     bool visible;
     /* Signature of the HA data that was last pushed into this widget, plus the
      * bookkeeping needed to skip re-applying it.  A layout page holds dozens of
